@@ -13,7 +13,7 @@ import numpy as np
 
 
 
-def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,metric_fn = None,scheduler =  None, scheduler_warmup=10,seed=42):
+def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,metric_fn = None,scheduler =  None, scheduler_warmup=5,deeplab=False,seed=42):
     torch.manual_seed(seed)
     
     if metric_fn is None:
@@ -57,6 +57,10 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,metric_fn
                     # zero the gradients
                     optimizer.zero_grad()
                     outputs = model(x)
+
+                    if deeplab:
+                        outputs = outputs["out"]
+
                     loss = loss_fn(outputs, y)
 
                     # the backward pass frees the graph memory, so there is no 
@@ -67,6 +71,8 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,metric_fn
                 else:
                     with torch.no_grad():
                         outputs = model(x)
+                        if deeplab:
+                            outputs = outputs["out"]
                         loss = loss_fn(outputs, y.long())
 
                 # stats - whatever is the phase
