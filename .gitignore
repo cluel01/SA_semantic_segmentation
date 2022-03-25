@@ -2,6 +2,7 @@
 .vscode
 *.tif
 
+runs/
 saved_models/*.csv
 #saved_models/*.pth
 
