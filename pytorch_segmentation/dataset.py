@@ -13,6 +13,8 @@ from sklearn.model_selection import train_test_split
 import fiona
 import cv2
 from tqdm import tqdm
+import pickle
+import pandas as pd
 
 from .utils.preprocessing import pad_image_even
 
@@ -143,6 +145,7 @@ class InMemorySatDataset(Dataset):
         return patches_satellite
 
 
+
 ## SatInferenceDataset for containing satellite imagery areas based on given shapes -> only returning X without mask
 class SatInferenceDataset(Dataset):
     def __init__(self,data_file_path,shape_path=None,transform=None,patch_size=[256,256,3],overlap=128,padding=64,pad_value=0,file_extension=".shp"):
@@ -181,12 +184,12 @@ class SatInferenceDataset(Dataset):
                         patches.extend(win_list)
                         shape_idx += 1
             self.sat_meta = src_sat.meta.copy()
-        self.patches = patches
-        self.shapes = shapes
+        self.patches = pd.DataFrame(patches)
+        self.shapes = pd.DataFrame(shapes)
         
 
     def __getitem__(self, index):
-        patch = self.patches[index]
+        patch = self.patches.iloc[index]
         with rasterio.open(self.data_file_path) as src_sat:
             win = patch["window"]
             img = src_sat.read(window=win)
@@ -208,10 +211,15 @@ class SatInferenceDataset(Dataset):
         img = torch.as_tensor(img).float().contiguous() 
         if self.transform:
             img = self.transform(img)
-        return img
+        return {"img":img,"idx":torch.tensor(index)}
     
     def __len__(self):
         return len(self.patches)
+
+    def save(self,filename):
+        with open(filename, 'wb') as outp:  
+                pickle.dump(self, outp, pickle.HIGHEST_PROTOCOL)
+
 
     @staticmethod
     def _patchify_window(window,satellite_img,patch_size,overlap,padding):

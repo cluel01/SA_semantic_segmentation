@@ -1,3 +1,4 @@
+import queue
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -15,17 +16,19 @@ import pyproj
 from shapely.ops import transform
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
+import pickle
 
 from .sampler import DistributedEvalSampler,VirtualMMAP
+from ..models.unet_model import UNet
 
 def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
-    mp.set_start_method('spawn')
-
+    #os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if not torch.cuda.is_available():
         raise Exception("No Cuda device available!")
 
     mmap_file = os.path.join(out_path,"tmp_mmap_"+time.strftime("%d_%m_%Y_%H%M%S"))
-    #mmap = np.memmap(mmap_file, dtype=dtype, mode='w+', shape=mmap_shape)
+    mmap = np.memmap(mmap_file, dtype=dtype, mode='w+', shape=(len(dataset),out_size,out_size))
 
     if device_ids == "all":
         world_size = torch.cuda.device_count()
@@ -36,41 +39,18 @@ def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_work
         device_ids = [device_ids]
         world_size = 1
 
-    processes = []
-    
-    for rank in range(world_size):
-        if world_size > 1:
-            d_id = device_ids[rank]
-        else:
-            d_id = device_ids[0]
-        p = mp.Process(target=run_inference, args=(rank,d_id,world_size,dataset,net,mmap_file,out_size,bs,num_workers,pin_memory,dtype))
-        p.start()
-        processes.append(p)
-    for p in processes:
-        p.join()
-    
-    virt_mmap = VirtualMMAP(world_size,len(dataset),mmap_file,dtype,out_size)
-
-    for s in dataset.shapes:
-        unpatchify_window(dataset,s,virt_mmap,out_path,compress)
-    virt_mmap.clean()
-
-def run_inference(rank,device_id,world_size,dataset,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype):
-    print("Start GPU:",device_id)
-    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
-    torch.cuda.set_device(device_id)
-    sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-    mmap_file = os.path.join(mmap_path+"_"+str(rank))
-    mmap = np.memmap(mmap_file, dtype=dtype, mode='w+', shape=(len(sampler),patch_size,patch_size))
-    dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler)
-    net = net.to(rank)
+    net = DataParallel(net, device_ids=device_ids)
+    net = net.to(device)
     net.eval()
-    if rank == 0:
-        dl = tqdm(dl,position=0)
+
+    sampler = torch.utils.data.SequentialSampler(dataset)
+    dl = DataLoader(dataset,sampler=sampler,batch_size=bs,
+                    num_workers=num_workers,pin_memory=pin_memory)
+
     pointer = 0
-    for batch in dl:
+    for batch in tqdm(dl):
         with torch.no_grad():
-            x = batch.to(rank)#[0].to(device)
+            x = batch.to(device)#[0].to(device)
             out = net(x)
             out = F.softmax(out,dim=1)
             out = torch.argmax(out,dim=1)
@@ -78,7 +58,14 @@ def run_inference(rank,device_id,world_size,dataset,net,mmap_path,patch_size,bs,
             end_idx = pointer+len(out)
             mmap[pointer:end_idx] = out
             pointer = end_idx
-    return mmap_file,sampler.start_idx,sampler.end_idx
+
+    for _,s in dataset.shapes.iterrows():
+        unpatchify_window(dataset,s,mmap,out_path,compress)
+    os.remove(mmap_file)
+
+
+
+    
 
 def unpatchify_window(dataset,shape,patches,out_path,compress):
     out_file = os.path.join(out_path,shape["name"]+".tif")
@@ -184,3 +171,136 @@ def raster_bounds_to_shape(raster_path,shape_path,crs="EPSG:4326"):
 
     df = gpd.GeoDataFrame({"id":1,"geometry":[geom]},crs=new_crs)
     df.to_file(shape_path)
+
+
+def mosaic_to_raster_mp(dataset_path,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
+    
+
+    if not torch.cuda.is_available():
+        raise Exception("No Cuda device available!")
+
+    mmap_file = os.path.join(out_path,"tmp_mmap_"+time.strftime("%d_%m_%Y_%H%M%S"))
+    #mmap = np.memmap(mmap_file, dtype=dtype, mode='w+', shape=mmap_shape)
+
+    if device_ids == "all":
+        world_size = torch.cuda.device_count()
+        device_ids = list(range(world_size))
+    elif type(device_ids) == list:
+        world_size = len(device_ids)
+    elif type(device_ids) == int:
+        device_ids = [device_ids]
+        world_size = 1
+
+
+    mp.spawn(run_inference,
+        args=(device_ids,world_size,dataset_path,net,mmap_file,out_size,bs,num_workers,pin_memory,dtype),
+        nprocs=world_size,
+        join=True)
+
+    with open(dataset_path, 'rb') as inp:
+        dataset = pickle.load(inp)
+        with VirtualMMAP(world_size,len(dataset),mmap_file,dtype,out_size) as virt_mmap:
+            for _,s in dataset.shapes.iterrows():
+                unpatchify_window(dataset,s,virt_mmap,out_path,compress)
+
+def run_inference(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype):
+    device_id = device_ids[rank]
+    print("Start GPU:",device_id)
+    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
+    torch.cuda.set_device(device_id)
+    with open(dataset_path, 'rb') as inp:
+        dataset = pickle.load(inp)
+        sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
+        #sampler = DistributedSampler(dataset,num_replicas=world_size,rank=rank)
+        mmap_file = os.path.join(mmap_path+"_"+str(rank))
+        mmap = np.memmap(mmap_file, dtype=dtype, mode='w+', shape=(len(sampler),patch_size,patch_size))
+        #print(num_workers)
+
+        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context="fork")
+        
+        net = net.to(rank)
+        net.eval()
+        if rank == 0:
+            dl = tqdm(dl,position=0)
+        pointer = 0
+        for batch in dl:
+            with torch.no_grad():
+                x = batch.to(rank)#[0].to(device)
+                out = net(x)
+                out = F.softmax(out,dim=1)
+                out = torch.argmax(out,dim=1)
+                out = out.cpu().numpy().astype(dtype)
+                end_idx = pointer+len(out)
+                mmap[pointer:end_idx] = out
+                pointer = end_idx
+
+
+def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs=16,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
+    mp.set_start_method('spawn')
+
+    if not torch.cuda.is_available():
+        raise Exception("No Cuda device available!")
+
+    mmap_file = os.path.join(out_path,"tmp_mmap_"+time.strftime("%d_%m_%Y_%H%M%S"))
+    mmap = np.memmap(mmap_file, dtype=dtype, mode='w+', shape=mmap_shape)
+
+    if device_ids == "all":
+        world_size = torch.cuda.device_count()
+        device_ids = list(range(world_size))
+    elif type(device_ids) == list:
+        world_size = len(device_ids)
+    elif type(device_ids) == int:
+        device_ids = [device_ids]
+        world_size = 1
+
+    queue = mp.Queue()
+    event = mp.Event()
+    context = mp.spawn(run_inference_queue,
+        args=(device_ids,world_size,dataset_path,net,mmap_file,mmap_shape[1],bs,num_workers,pin_memory,dtype,queue,event),
+        nprocs=world_size,
+        join=False)
+
+    active = list(range(world_size))
+    while len(active) > 0:
+        d = queue.get()
+        if d[1] == "DONE":
+            active.remove(d[0])
+        else:
+            start_idx = d[0]
+            end_idx = start_idx + len(d[1])
+            mmap[start_idx:end_idx] = d[1]
+    event.set()
+    context.join()
+    
+
+    with open(dataset_path, 'rb') as inp:
+        dataset = pickle.load(inp)
+        for _,s in dataset.shapes.iterrows():
+            print(s)
+            unpatchify_window(dataset,s,mmap,out_path,compress)
+    os.remove(mmap_file)
+
+def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
+    device_id = device_ids[rank]
+    print("Start GPU:",device_id)
+    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
+    torch.cuda.set_device(device_id)
+    with open(dataset_path, 'rb') as inp:
+        dataset = pickle.load(inp)
+        sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
+        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context="fork")
+
+        net = net.to(rank)
+        net.eval()
+        if rank == 0:
+            dl = tqdm(dl,position=0)
+        for batch in dl:
+            with torch.no_grad():
+                x = batch["img"].to(rank)#[0].to(device)
+                out = net(x)
+                out = F.softmax(out,dim=1)
+                out = torch.argmax(out,dim=1)
+                out = out.cpu().numpy().astype(dtype)
+                queue.put([batch["idx"][0],out])
+        queue.put([rank,"DONE"])
+        event.wait()

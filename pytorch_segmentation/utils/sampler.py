@@ -1,3 +1,4 @@
+from concurrent.futures import thread
 import math
 from mmap import mmap
 import torch
@@ -63,25 +64,45 @@ class DistributedEvalSampler(Sampler):
         self.dataset = dataset
         self.num_replicas = num_replicas
         self.rank = rank
-        self.epoch = 0
 
         self.total_size = len(self.dataset)    
-        indices = np.array_split(list(range(self.total_size)),self.num_replicas)[self.rank]
-        self.num_samples = len(indices)             # true value without extra samples
-        self.start_idx = indices[0]
-        self.end_idx = indices[-1]
+        self.num_samples = self._get_num_samples()          # true value without extra samples
 
 
     def __iter__(self):
-        indices = list(range(len(self.dataset)))
- 
         # subsample
-        indices = np.array_split(indices,self.num_replicas)[self.rank]
+        indices = self._get_indices()
         assert len(indices) == self.num_samples
         return iter(indices)
 
     def __len__(self):
         return self.num_samples
+
+    def _get_num_samples(self):
+        threshold = self.total_size %  self.num_replicas
+        if self.rank < threshold:
+            return self.total_size // self.num_replicas + 1 
+        else:
+            return self.total_size // self.num_replicas
+
+    def _get_indices(self):
+        threshold = self.total_size %  self.num_replicas
+        idx = 0
+        start_idx = 0
+        while idx < self.rank:
+            if idx < threshold:
+                start_idx += self.total_size //  self.num_replicas+1
+            else:
+                start_idx += self.total_size //  self.num_replicas
+            idx += 1
+        if self.rank < threshold:
+            len_idx = self.total_size //  self.num_replicas+1
+        else:
+            len_idx = self.total_size //  self.num_replicas
+        return list(range(start_idx,start_idx+len_idx))
+        
+
+
 
 class VirtualMMAP():
     def __init__(self,num_replicas,total_size,mmap_name,dtype,patch_size) -> None:
@@ -90,7 +111,7 @@ class VirtualMMAP():
         self.mmap_name = mmap_name
         self.patch_size = patch_size
 
-        indices  = np.array_split(list(range(self.total_size)),self.num_replicas)
+        indices  = np.array_split(np.arange(self.total_size),self.num_replicas)
         self.mmap_handler = [np.memmap(mmap_name+"_"+str(i), dtype=dtype, mode='r', shape=(len(indices[i]),patch_size,patch_size)) for i in range(num_replicas)]
         
         start_idx = 0
@@ -108,6 +129,12 @@ class VirtualMMAP():
                 m_idx  = index-min
                 mmap = self.mmap_handler[i]
                 return mmap[m_idx]
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.clean()
 
     def clean(self):
         for i in range(self.num_replicas):
