@@ -1,6 +1,7 @@
 .old
 .vscode
 *.tif
+*.pkl
 
 runs/
 saved_models/*.csv
