@@ -5,6 +5,7 @@
 
 runs/
 saved_models/*.csv
+jobs/logs
 #saved_models/*.pth
 
 *.pth
