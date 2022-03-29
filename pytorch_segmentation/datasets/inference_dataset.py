@@ -73,8 +73,8 @@ class SatInferenceDataset(Dataset):
                     top = (self.patch_size[0]- img.shape[1]) // 2
                 if win.col_off < 0:
                     left = (self.patch_size[0]- img.shape[2]) // 2
-                bottom = self.patch_size[0]-img.shape[1]+top
-                right = self.patch_size[0]-img.shape[2]+left
+                bottom = self.patch_size[0]-img.shape[1]-top
+                right = self.patch_size[0]-img.shape[2]-left
                 img = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=self.pad_value)
                 img = img.transpose(2,0,1)
         img = img / 255

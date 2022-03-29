@@ -8,6 +8,7 @@ from rasterio.windows import Window
 import os
 from tqdm import tqdm
 import time
+import cv2
 
 import torch.multiprocessing as mp
 import pickle
@@ -200,6 +201,7 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
 
 def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
     try:
+        cv2.setNumThreads(0) # in order to work for PALMA
         device_id = device_ids[rank]
         print("Start GPU:",device_id)
         os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   

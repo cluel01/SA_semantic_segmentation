@@ -4,7 +4,6 @@ sys.path.append('/home/c/c_luel01/satellite_data/SA_semantic_segmentation/')
 import torch
 import os
 from pathlib import Path
-import cv2
 
 from pytorch_segmentation.utils.postprocessing import mosaic_to_raster_mp_queue,mosaic_to_raster
 from pytorch_segmentation.datasets.inference_dataset import SatInferenceDataset
@@ -19,7 +18,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 patch_size = [256,256,3] # [x,y,bands]
 overlap = 128
 padding = 64
-nworkers = 0
+nworkers = 4
 bs = 100
 
 if len(sys.argv) != 4:
@@ -41,7 +40,6 @@ o_path = os.path.join(out_path,area)
 Path(o_path).mkdir(parents=True, exist_ok=True)
 tmp_d_path = os.path.join(o_path,"tmp_"+year+".pkl")
 
-
 dataset = SatInferenceDataset(d_path,s_path,overlap=overlap,padding=padding)
 dataset.save(tmp_d_path)
 mmap_shape = (len(dataset),patch_size[0],patch_size[1])
@@ -52,7 +50,6 @@ net.load_state_dict(torch.load(m_path))
 
 
 if __name__ == '__main__':
-    #cv2.set_num_threads(0)
     mosaic_to_raster_mp_queue(tmp_d_path,net,o_path,mmap_shape=mmap_shape,
                         device_ids=device_ids,bs=bs,pin_memory=True,num_workers=nworkers)
     os.remove(tmp_d_path)
