@@ -175,11 +175,14 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
         nprocs=world_size,
         join=False)
 
+    complete = True
     active = list(range(world_size))
     while len(active) > 0:
         d = queue.get()
-        if d[1] == "DONE":
+        if type(d[1]) == str:
             active.remove(d[0])
+            if d[1] == "ERROR":
+                complete = False
         else:
             start_idx = d[0]
             end_idx = start_idx + len(d[1])
@@ -187,12 +190,12 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
     event.set()
     context.join()
     
-
-    with open(dataset_path, 'rb') as inp:
-        dataset = pickle.load(inp)
-        for _,s in dataset.shapes.iterrows():
-            print(s)
-            unpatchify_window(dataset,s,mmap,out_path,compress)
+    if complete:
+        with open(dataset_path, 'rb') as inp:
+            dataset = pickle.load(inp)
+            for _,s in dataset.shapes.iterrows():
+                print(s)
+                unpatchify_window(dataset,s,mmap,out_path,compress)
     os.remove(mmap_file)
 
 def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
@@ -222,5 +225,5 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         event.wait()
     except Exception as e:
         print(f"Error: GPU {device_id} - {e}")
-        queue.put([rank,"DONE"])
+        queue.put([rank,"ERROR"])
         event.wait()
