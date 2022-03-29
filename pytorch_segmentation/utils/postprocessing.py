@@ -148,7 +148,10 @@ def unpatchify(patches,grid_shape,padding):
 
 
 def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs=16,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
-    mp.set_start_method('spawn')
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
 
     if not torch.cuda.is_available():
         raise Exception("No Cuda device available!")
@@ -193,26 +196,31 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
     os.remove(mmap_file)
 
 def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
-    device_id = device_ids[rank]
-    print("Start GPU:",device_id)
-    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
-    torch.cuda.set_device(device_id)
-    with open(dataset_path, 'rb') as inp:
-        dataset = pickle.load(inp)
-        sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context="fork")
+    try:
+        device_id = device_ids[rank]
+        print("Start GPU:",device_id)
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
+        torch.cuda.set_device(device_id)
+        with open(dataset_path, 'rb') as inp:
+            dataset = pickle.load(inp)
+            sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
+            dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context="fork")
 
-        net = net.to(rank)
-        net.eval()
-        if rank == 0:
-            dl = tqdm(dl,position=0)
-        for batch in dl:
-            with torch.no_grad():
-                x = batch["img"].to(rank)#[0].to(device)
-                out = net(x)
-                out = F.softmax(out,dim=1)
-                out = torch.argmax(out,dim=1)
-                out = out.cpu().numpy().astype(dtype)
-                queue.put([batch["idx"][0],out])
-    queue.put([rank,"DONE"])
-    event.wait()
+            net = net.to(rank)
+            net.eval()
+            if rank == 0:
+                dl = tqdm(dl,position=0)
+            for batch in dl:
+                with torch.no_grad():
+                    x = batch["img"].to(rank)#[0].to(device)
+                    out = net(x)
+                    out = F.softmax(out,dim=1)
+                    out = torch.argmax(out,dim=1)
+                    out = out.cpu().numpy().astype(dtype)
+                    queue.put([batch["idx"][0],out])
+        queue.put([rank,"DONE"])
+        event.wait()
+    except Exception as e:
+        print(f"Error: GPU {device_id} - {e}")
+        queue.put([rank,"DONE"])
+        event.wait()
