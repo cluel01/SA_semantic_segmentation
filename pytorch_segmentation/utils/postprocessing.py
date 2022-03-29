@@ -3,21 +3,16 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.nn import DataParallel
-#from torch.nn.parallel import DistributedDataParallel as DDP
 import rasterio
 from rasterio.windows import Window
 import os
 from tqdm import tqdm
 import time
-from shapely.geometry import box
-import geopandas as gpd
-import pyproj
-from shapely.ops import transform
+
 import torch.multiprocessing as mp
-from torch.utils.data.distributed import DistributedSampler
 import pickle
 
-from .sampler import DistributedEvalSampler,VirtualMMAP
+from .sampler import DistributedEvalSampler
 
 
 def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
@@ -150,21 +145,6 @@ def unpatchify(patches,grid_shape,padding):
     output_arr = np.vstack(out)
     del out
     return output_arr.transpose(2,0,1)
-
-def raster_bounds_to_shape(raster_path,shape_path,crs="EPSG:4326"):
-    ra = rasterio.open(raster_path)
-    bounds  = ra.bounds
-
-    old_crs = pyproj.CRS(ra.crs)
-    new_crs = pyproj.CRS(crs)
-
-    geom = box(*bounds)
-    if old_crs != new_crs:
-        project = pyproj.Transformer.from_crs(ra.crs, new_crs, always_xy=True).transform
-        geom = transform(project, geom)
-
-    df = gpd.GeoDataFrame({"id":1,"geometry":[geom]},crs=new_crs)
-    df.to_file(shape_path)
 
 
 def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs=16,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
