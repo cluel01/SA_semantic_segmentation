@@ -29,7 +29,12 @@ class SatInferenceDataset(Dataset):
         patches = []
         shapes = []
         shape_idx = 0
-        shape_files = [os.path.join(shape_path,i) for i in os.listdir(shape_path) if i.endswith(file_extension)]
+        
+        if type(shape_path) == list:
+            shape_files = shape_path
+        elif type(shape_path) == str:
+            shape_files = [shape_path]
+        #shape_files = [os.path.join(shape_path,i) for i in os.listdir(shape_path) if i.endswith(file_extension)]
         with rasterio.open(data_file_path) as src_sat:
             sat_shape = geometry.box(*src_sat.bounds)
             for f in shape_files:
