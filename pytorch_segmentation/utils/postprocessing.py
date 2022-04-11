@@ -13,7 +13,7 @@ import cv2
 import torch.multiprocessing as mp
 import pickle
 
-from .data.sampler import DistributedEvalSampler
+from ..data.sampler import DistributedEvalSampler
 
 
 def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
@@ -222,13 +222,13 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
                 dl = tqdm(dl,position=0)
             for batch in dl:
                 with torch.no_grad():
-                    x,_ = batch
+                    x,idx = batch
                     x = x.to(rank)#[0].to(device)
                     out = net(x)
                     out = F.softmax(out,dim=1)
                     out = torch.argmax(out,dim=1)
                     out = out.cpu().numpy().astype(dtype)
-                    queue.put([batch["idx"][0],out])
+                    queue.put([idx[0],out])
                     del out
                     del batch
                     del x
