@@ -82,7 +82,19 @@ class InMemorySatDataset(Dataset):
         if self.transform:
             sample = self.transform(image,mask)
             _,mask = sample
-        plt.imshow(  mask.numpy()  )
+        plt.imshow(  mask.numpy())
+
+    def show_tuple(self,idx):
+        image = self.X[idx]
+        mask = self.y[idx]
+        if self.transform:
+            sample = self.transform(image,mask)
+            image,mask = sample
+        fig, axs = plt.subplots(1,2)
+        axs[0].imshow(image.permute(1, 2, 0).numpy()  )
+        axs[1].imshow(  mask.numpy())
+        #plt.show()
+
 
     def get_train_test_set(self,test_size,train_transform=None,test_transform=None,seed=42):
         if train_transform is None:

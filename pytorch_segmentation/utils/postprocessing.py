@@ -178,9 +178,10 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
 
     complete = True
     active = list(range(world_size))
-    while (len(active) > 0) or (complete == True):
+    while (len(active) > 0) and (complete == True):
         d = queue.get()
         if type(d[1]) == str:
+            print("DONE ",str(d[0]))
             active.remove(d[0])
             if d[1] == "ERROR":
                 complete = False
