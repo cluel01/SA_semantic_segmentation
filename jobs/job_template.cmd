@@ -5,7 +5,7 @@
 #SBATCH --partition=$GPU
 #SBATCH --gres=gpu:$N_GPU
 #SBATCH --time=48:00:00
-#SBATCH --mem=70G
+#SBATCH --mem=90G
 
 #SBATCH --job-name=inference_$AREA_$YEAR_$GPU
 #SBATCH --output=logs/output_$AREA_$YEAR

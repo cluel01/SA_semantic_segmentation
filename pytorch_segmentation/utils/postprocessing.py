@@ -13,7 +13,7 @@ import cv2
 import torch.multiprocessing as mp
 import pickle
 
-from .sampler import DistributedEvalSampler
+from .data.sampler import DistributedEvalSampler
 
 
 def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
@@ -189,6 +189,7 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
             start_idx = d[0]
             end_idx = start_idx + len(d[1])
             mmap[start_idx:end_idx] = d[1]
+        del d
     event.set()
     context.join()
     
@@ -196,13 +197,16 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
         with open(dataset_path, 'rb') as inp:
             dataset = pickle.load(inp)
             for _,s in dataset.shapes.iterrows():
-                print(s)
                 unpatchify_window(dataset,s,mmap,out_path,compress)
     os.remove(mmap_file)
 
 def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
     try:
-        cv2.setNumThreads(0) # in order to work for PALMA
+        cv2.setNumThreads(0) #Otherwise Error with multiprocessing dataloader 
+        mp_context = "fork"
+        if num_workers == 0:
+            mp_context = None
+
         device_id = device_ids[rank]
         print("Start GPU:",device_id)
         os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
@@ -210,7 +214,7 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         with open(dataset_path, 'rb') as inp:
             dataset = pickle.load(inp)
             sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-            dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context="fork")
+            dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
             net = net.to(rank)
             net.eval()
@@ -218,12 +222,16 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
                 dl = tqdm(dl,position=0)
             for batch in dl:
                 with torch.no_grad():
-                    x = batch["img"].to(rank)#[0].to(device)
+                    x,_ = batch
+                    x = x.to(rank)#[0].to(device)
                     out = net(x)
                     out = F.softmax(out,dim=1)
                     out = torch.argmax(out,dim=1)
                     out = out.cpu().numpy().astype(dtype)
                     queue.put([batch["idx"][0],out])
+                    del out
+                    del batch
+                    del x
         queue.put([rank,"DONE"])
         event.wait()
     except Exception as e:
