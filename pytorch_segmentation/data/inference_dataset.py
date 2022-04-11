@@ -56,6 +56,8 @@ class SatInferenceDataset(Dataset):
             self.sat_meta = src_sat.meta.copy()
         self.patches = pd.DataFrame(patches)
         self.shapes = pd.DataFrame(shapes)
+        del shapes
+        del patches
         
 
     def __getitem__(self, index):
@@ -81,7 +83,7 @@ class SatInferenceDataset(Dataset):
         img = torch.as_tensor(img).float().contiguous() 
         if self.transform:
             img = self.transform(img)
-        return {"img":img,"idx":torch.tensor(index)}
+        return img,torch.tensor(index)
     
     def __len__(self):
         return len(self.patches)
