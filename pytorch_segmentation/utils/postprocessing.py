@@ -223,7 +223,7 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
             for batch in dl:
                 with torch.no_grad():
                     x,idx = batch
-                    x = x.to(rank)#[0].to(device)
+                    x = torch.from_numpy().float().to(rank)#[0].to(device)
                     out = net(x)
                     out = F.softmax(out,dim=1)
                     out = torch.argmax(out,dim=1)

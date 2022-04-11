@@ -66,7 +66,7 @@ class SatInferenceDataset(Dataset):
             win = patch["window"]
             img = src_sat.read(window=win)
             if img.size == 0:
-                img = torch.empty(self.t_patch_size)
+                img = np.empty(self.t_patch_size)
                 img = img.fill_(self.pad_value)
             elif tuple(img.shape) != tuple(self.t_patch_size):
                 top = 0
@@ -80,10 +80,10 @@ class SatInferenceDataset(Dataset):
                 img = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=self.pad_value)
                 img = img.transpose(2,0,1)
         img = img / 255
-        img = torch.as_tensor(img).float().contiguous() 
+        #img = torch.as_tensor(img).float().contiguous() 
         if self.transform:
             img = self.transform(img)
-        return img,torch.tensor(index)
+        return img,index
     
     def __len__(self):
         return len(self.patches)
