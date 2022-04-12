@@ -1,4 +1,4 @@
-from SA_semantic_segmentation.pytorch_segmentation.data.inference_dataset import SatInferenceDataset
+from pytorch_segmentation.data.inference_dataset import SatInferenceDataset
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
