@@ -1,3 +1,4 @@
+from SA_semantic_segmentation.pytorch_segmentation.data.inference_dataset import SatInferenceDataset
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -8,7 +9,6 @@ from rasterio.windows import Window
 import os
 from tqdm import tqdm
 import time
-import cv2
 
 import torch.multiprocessing as mp
 import pickle
@@ -202,7 +202,6 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
 
 def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
     try:
-        cv2.setNumThreads(0) #Otherwise Error with multiprocessing dataloader 
         mp_context = "fork"
         if num_workers == 0:
             mp_context = None
@@ -211,27 +210,27 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         print("Start GPU:",device_id)
         os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
         torch.cuda.set_device(device_id)
-        with open(dataset_path, 'rb') as inp:
-            dataset = pickle.load(inp)
-            sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-            dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        dataset =  SatInferenceDataset(dataset_path=dataset_path)
+        sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
+        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
-            net = net.to(rank)
-            net.eval()
-            if rank == 0:
-                dl = tqdm(dl,position=0)
-            for batch in dl:
-                with torch.no_grad():
-                    x,idx = batch
-                    x = torch.from_numpy().float().to(rank)#[0].to(device)
-                    out = net(x)
-                    out = F.softmax(out,dim=1)
-                    out = torch.argmax(out,dim=1)
-                    out = out.cpu().numpy().astype(dtype)
-                    queue.put([idx[0],out])
-                    del out
-                    del batch
-                    del x
+        net = net.to(rank)
+        net.eval()
+        if rank == 0:
+            dl = tqdm(dl,position=0)
+        for batch in dl:
+            with torch.no_grad():
+                x,idx = batch
+                x = x.float().to(rank)#[0].to(device)
+                out = net(x)
+                out = F.softmax(out,dim=1)
+                out = torch.argmax(out,dim=1)
+                out = out.cpu().numpy().astype(dtype)
+                queue.put([idx[0],out])
+                del out
+                del batch
+                del x
+                del idx
         queue.put([rank,"DONE"])
         event.wait()
     except Exception as e:

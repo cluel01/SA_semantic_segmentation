@@ -2,6 +2,8 @@ import sys
 sys.path.append('/home/c/c_luel01/satellite_data/SA_semantic_segmentation/')
 
 import torch
+import torch.multiprocessing as mp
+
 import os
 from pathlib import Path
 
@@ -9,29 +11,32 @@ from pytorch_segmentation.utils.postprocessing import mosaic_to_raster_mp_queue,
 from pytorch_segmentation.data.inference_dataset import SatInferenceDataset
 from pytorch_segmentation.models import UNet
 
-area = str(sys.argv[1])
-year = str(sys.argv[2])
-n_gpus = int(sys.argv[3])
-device_ids = list(range(n_gpus))
-
-data_path = "/cloud/wwu1/d_satdat/shared_satellite_data/tmp/" 
-shape_path = "/cloud/wwu1/d_satdat/shared_satellite_data/tmp/shapes/"
-model_path = "/cloud/wwu1/d_satdat/christian_development/rapidearth/notebooks/satellite_data/saved_models/"
-m_path = os.path.join(model_path,"unet_07_04_2022_094905.pth")
-out_path = "/scratch/tmp/c_luel01/satellite_data/inference/"
-patch_size = [256,256,3] # [x,y,bands]
-overlap = 128
-padding = 64
-nworkers = 4
-if n_gpus == 1:
-    bs = 150
-else:
-    bs = 100 #Optimal 130
-
-
-
 
 if __name__ == '__main__':
+    area = str(sys.argv[1])
+    year = str(sys.argv[2])
+    n_gpus = int(sys.argv[3])
+    device_ids = list(range(n_gpus))
+
+    data_path = "/cloud/wwu1/d_satdat/shared_satellite_data/tmp/" 
+    shape_path = "/cloud/wwu1/d_satdat/shared_satellite_data/tmp/shapes/"
+    model_path = "/cloud/wwu1/d_satdat/christian_development/rapidearth/notebooks/satellite_data/saved_models/"
+    m_path = os.path.join(model_path,"unet_07_04_2022_094905.pth")
+    out_path = "/scratch/tmp/c_luel01/satellite_data/inference/"
+    patch_size = [256,256,3] # [x,y,bands]
+    overlap = 128
+    padding = 64
+    nworkers = 4
+    if n_gpus == 1:
+        bs = 150
+    else:
+        bs = 130 
+
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     if len(sys.argv) != 4:
