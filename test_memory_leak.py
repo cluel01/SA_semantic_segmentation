@@ -10,7 +10,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 import pickle
-
+import gc
 
 def custom_collate_fn(data):
             x,idx = zip(*data)
@@ -38,7 +38,7 @@ class DataIter(Dataset):
         return data,idx
 
 
-def run(rank,d_path,s_path):
+def run(rank,d_path,s_path,queue,event):
     try:
 
         #with open("test.pkl", 'rb') as inp:
@@ -50,13 +50,16 @@ def run(rank,d_path,s_path):
         #dataset = pickle.load(inp)
         dataset = SatInferenceDataset(dataset_path=d_path)
         print("LOADED")
-
+        torch.set_num_threads(1)
         dl = DataLoader(dataset,batch_size=50,num_workers = 4,pin_memory=True,multiprocessing_context="fork")
 
         print("START ",str(rank))
         for i,batch in enumerate(dl):
-            if i % 100 == 0:
-                print(i+rank)
+            if i % 10 == 0:
+                #print(i+rank)
+                queue.put(batch[0])
+        queue.put(rank)
+        event.wait()
         print("Done")
     except Exception as e:
         print(f"Error: GPU {rank} - {e}")
@@ -81,8 +84,8 @@ if __name__ == '__main__':
     d_path = os.path.join(data_path,area,year+"_cog.tif")
     s_path = os.path.join(shape_path,area,year+".shp")
 
-    dataset = SatInferenceDataset(data_file_path=d_path,shape_path=s_path,overlap=128,padding=64)
-    dataset.save("testV2.pkl")
+    #dataset = SatInferenceDataset(data_file_path=d_path,shape_path=s_path,overlap=128,padding=64)
+    #dataset.save("testV2.pkl")
     # np.save("test.npy",dataset.patches)
     # dataset.shapes.to_csv("test.csv")
 
@@ -90,9 +93,27 @@ if __name__ == '__main__':
     # with open("test_all.pkl", 'wb') as outp:  
     #             pickle.dump(all, outp, pickle.HIGHEST_PROTOCOL)
 
-    mp.spawn(run,
-        args=("testV2.pkl",s_path),
-        nprocs=nworkers)
+    queue = mp.JoinableQueue(1)#mp.Queue()
+    event = mp.Event()
+
+    context = mp.spawn(run,
+        args=("testV2.pkl",s_path,queue,event),
+        nprocs=nworkers,join=False)
+
+    active = list(range(nworkers))
+    while (len(active) > 0):
+        d = queue.get()
+        if type(d) == int:
+            print("DONE ",str(d))
+            active.remove(d)
+        else:
+           pass #print(d[1][0][0][0][0])
+        del d
+        queue.task_done()
+        #print(queue.qsize())
+        gc.collect()
+    event.set()
+    context.join()
 
 
 
