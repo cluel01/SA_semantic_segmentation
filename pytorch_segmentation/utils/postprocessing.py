@@ -151,6 +151,7 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
         pass
+    torch.set_num_threads(1)
 
     if not torch.cuda.is_available():
         raise Exception("No Cuda device available!")
@@ -211,7 +212,8 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         torch.cuda.set_device(device_id)
         dataset =  SatInferenceDataset(dataset_path=dataset_path)
         sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-        dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        #dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
         net = net.to(rank)
         net.eval()
@@ -220,11 +222,12 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         for batch in dl:
             with torch.no_grad():
                 x,idx = batch
-                x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
+                #x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
+                x = x.float().to(rank,non_blocking=True)
                 out = net(x)
                 out = F.softmax(out,dim=1)
                 out = torch.argmax(out,dim=1)
-                out = out.cpu().byte()#.numpy().astype(dtype)
+                out = out.byte().cpu()
                 queue.put([idx[0],out])
                 del out
                 del batch
