@@ -53,7 +53,7 @@ if __name__ == '__main__':
     Path(o_path).mkdir(parents=True, exist_ok=True)
     tmp_d_path = os.path.join(o_path,"tmp_"+year+".pkl")
 
-    dataset = SatInferenceDataset(d_path,s_path,overlap=overlap,padding=padding)
+    dataset = SatInferenceDataset(data_file_path=d_path,shape_path=s_path,overlap=overlap,padding=padding)
     dataset.save(tmp_d_path)
     mmap_shape = (len(dataset),patch_size[0],patch_size[1])
     del dataset

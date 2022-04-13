@@ -1,4 +1,4 @@
-from pytorch_segmentation.data.inference_dataset import SatInferenceDataset
+from ..data.inference_dataset import SatInferenceDataset
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -9,10 +9,8 @@ from rasterio.windows import Window
 import os
 from tqdm import tqdm
 import time
-
 import torch.multiprocessing as mp
 import pickle
-
 from ..data.sampler import DistributedEvalSampler
 
 
@@ -188,14 +186,14 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
         else:
             start_idx = d[0]
             end_idx = start_idx + len(d[1])
-            mmap[start_idx:end_idx] = d[1]
+            mmap[start_idx:end_idx] = d[1].numpy()
         del d
     event.set()
     context.join()
     
     if complete:
         with open(dataset_path, 'rb') as inp:
-            dataset = pickle.load(inp)
+            dataset = SatInferenceDataset(dataset_path=dataset_path)
             for _,s in dataset.shapes.iterrows():
                 unpatchify_window(dataset,s,mmap,out_path,compress)
     os.remove(mmap_file)
@@ -203,6 +201,7 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
 def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
     try:
         mp_context = "fork"
+        torch.set_num_threads(1) #prevent memory leakage
         if num_workers == 0:
             mp_context = None
 
@@ -212,7 +211,7 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         torch.cuda.set_device(device_id)
         dataset =  SatInferenceDataset(dataset_path=dataset_path)
         sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
         net = net.to(rank)
         net.eval()
@@ -221,11 +220,11 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         for batch in dl:
             with torch.no_grad():
                 x,idx = batch
-                x = x.float().to(rank)#[0].to(device)
+                x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
                 out = net(x)
                 out = F.softmax(out,dim=1)
                 out = torch.argmax(out,dim=1)
-                out = out.cpu().numpy().astype(dtype)
+                out = out.cpu().byte()#.numpy().astype(dtype)
                 queue.put([idx[0],out])
                 del out
                 del batch
@@ -237,3 +236,10 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         print(f"Error: GPU {device_id} - {e}")
         queue.put([rank,"ERROR"])
         event.wait()
+
+def custom_collate_fn(data):
+    x,idx = zip(*data)
+    x = np.stack(x)
+    idx = np.stack(idx)
+    del data
+    return x,idx
