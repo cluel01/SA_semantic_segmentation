@@ -134,7 +134,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
 
     memfiles = create_memfiles(shapes,compress)
 
-    queue = mp.JoinableQueue(100)
+    queue = mp.Queue(1000)#mp.JoinableQueue(1000)
     event = mp.Event()
     context = mp.spawn(run_inference_queue,
         args=(device_ids,world_size,dataset_path,net,bs,num_workers,pin_memory,queue,event),
@@ -154,7 +154,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
             else:
                 unpatchify_window_batch(shapes,memfiles,d[1].numpy(),d[0].numpy())
             del d
-            queue.task_done()
+            #queue.task_done()
     event.set()
     context.join()
     
