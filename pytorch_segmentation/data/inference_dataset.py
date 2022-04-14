@@ -52,7 +52,7 @@ class SatInferenceDataset(Dataset):
                                 win_list,grid_shape = self._patchify_window(win,src_sat,patch_size,overlap,padding)
                                 shapes.append({"shape_id":shape_idx,"transform":src_sat.window_transform(win),"padding":pad,
                                                 "start_idx":len(patches),"grid_shape":grid_shape,"name":name,
-                                                "width":win.width,"height":win.height})
+                                                "width":win.width,"height":win.height,"sat_meta":src_sat.meta.copy()})
                                 patches.append(win_list)
                                 shape_idx += 1
 

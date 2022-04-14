@@ -1,18 +1,17 @@
-from ..data.inference_dataset import SatInferenceDataset
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.nn import DataParallel
 import rasterio
-from rasterio.windows import Window
 import os
 from tqdm import tqdm
 import time
 import torch.multiprocessing as mp
-import pickle
-from ..data.sampler import DistributedEvalSampler
-
+from .data.sampler import DistributedEvalSampler
+from .data.inference_dataset import SatInferenceDataset
+from .utils.unpatchify import unpatchify,unpatchify_window,unpatchify_window_batch
 
 def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
     #os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  
@@ -56,102 +55,12 @@ def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_work
         unpatchify_window(dataset,s,mmap,out_path,compress)
     os.remove(mmap_file)
 
-
-def unpatchify_window(dataset,shape,patches,out_path,compress):
-    out_file = os.path.join(out_path,shape["name"]+".tif")
-    out_transform = shape["transform"]
-    start_idx = shape["start_idx"]
-    ny,nx = shape["grid_shape"]
-    ypad,ypad_extra,xpad,xpad_extra = shape["padding"]
-
-    print("Write file: ",out_file)
-
-    out_meta = dataset.sat_meta
-    height = shape["height"]
-    width = shape["width"]
-    out_meta.update({"driver": "GTiff",
-                    "count":1,
-                    "height": height,
-                    "width": width,
-                    "transform": out_transform,
-                    "compress":compress})
-
-    i = start_idx
-    col_off,row_off = 0,0
-    with rasterio.open(out_file, "w", **out_meta) as dest:
-        for y in range(ny):
-            for x in range(nx):
-                img = patches[i]
-
-                if img is None:
-                    print(i)
-                co,ro = 0,0
-                if (x != nx-1) and (y != ny-1):
-                    cropped_img = img[ypad:img.shape[0]-ypad,xpad:img.shape[1]-xpad]
-                    co = cropped_img.shape[1]
-                if (x == nx-1) and (y != ny-1):
-                    cropped_img = img[ypad:img.shape[0]-ypad,xpad:img.shape[1]-xpad_extra]
-                    ro = cropped_img.shape[0]
-                    co = -col_off
-                if (x != nx-1) and (y == ny-1):
-                    cropped_img = img[ypad:img.shape[0]-ypad_extra,xpad:img.shape[1]-xpad]
-                    co = cropped_img.shape[1]
-                if (x == nx-1) and (y == ny-1):
-                    cropped_img = img[ypad:img.shape[0]-ypad_extra,xpad:img.shape[1]-xpad_extra]
-                win = Window(row_off=row_off,col_off=col_off,
-                            width=cropped_img.shape[1],height=cropped_img.shape[0])
-                dest.write(cropped_img,window=win,indexes=1)
-                i += 1
-                col_off += co
-                row_off += ro
-
-    
-
-#w: npatches width, h: npatches height, c: nchannel, x: patch_size x, y: patch_size y
-#patches format: (npatches,(c),x,y)
-#grid_shape format: (h,w)
-#output format: (x,y)
-def unpatchify(patches,grid_shape,padding):
-    i = 0
-    ypad,ypad_extra,xpad,xpad_extra = padding
-    ny,nx = grid_shape
-
-    if len(patches.shape) == 3:
-        #only one channel
-        patches = np.expand_dims(patches,1)
-
-    out = []
-    for y in range(ny):
-        o = []
-        for x in range(nx):
-            img = patches[i]
-            
-            if (x != nx-1) and (y != ny-1):
-                cropped_img = img[:,ypad:img.shape[1]-ypad,xpad:img.shape[2]-xpad]
-            if (x == nx-1) and (y != ny-1):
-                cropped_img = img[:,ypad:img.shape[1]-ypad,xpad:img.shape[2]-xpad_extra]
-            if (x != nx-1) and (y == ny-1):
-                cropped_img = img[:,ypad:img.shape[1]-ypad_extra,xpad:img.shape[2]-xpad]
-            if (x == nx-1) and (y == ny-1):
-                cropped_img = img[:,ypad:img.shape[1]-ypad_extra,xpad:img.shape[2]-xpad_extra]
-
-            o.append(cropped_img.transpose(2,1,0))
-            i += 1
-        tmp = np.vstack(o).transpose(1,0,2)
-        del o
-        out.append(tmp)
-        del tmp
-    output_arr = np.vstack(out)
-    del out
-    return output_arr.transpose(2,0,1)
-
-
 def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs=16,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
         pass
-    torch.set_num_threads(1)
+    #torch.set_num_threads(1)
 
     if not torch.cuda.is_available():
         raise Exception("No Cuda device available!")
@@ -168,7 +77,9 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
         device_ids = [device_ids]
         world_size = 1
 
-    queue = mp.Queue()
+    #manager = mp.Manager()
+    #queue = manager.Queue() #mp.Queue(1000)
+    queue  = mp.JoinableQueue(100)
     event = mp.Event()
     context = mp.spawn(run_inference_queue,
         args=(device_ids,world_size,dataset_path,net,mmap_file,mmap_shape[1],bs,num_workers,pin_memory,dtype,queue,event),
@@ -178,17 +89,19 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
     complete = True
     active = list(range(world_size))
     while (len(active) > 0) and (complete == True):
-        d = queue.get()
-        if type(d[1]) == str:
-            print("DONE ",str(d[0]))
-            active.remove(d[0])
-            if d[1] == "ERROR":
-                complete = False
-        else:
-            start_idx = d[0]
-            end_idx = start_idx + len(d[1])
-            mmap[start_idx:end_idx] = d[1].numpy()
-        del d
+        while (not queue.empty()) and (complete == True):
+            d = queue.get()
+            if type(d[1]) == str:
+                print("DONE ",str(d[0]))
+                active.remove(d[0])
+                if d[1] == "ERROR":
+                    complete = False
+            else:
+                start_idx = d[0]
+                end_idx = start_idx + len(d[1])
+                mmap[start_idx:end_idx] = d[1].numpy()
+            del d
+            queue.task_done()
     event.set()
     context.join()
     
@@ -199,10 +112,65 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
                 unpatchify_window(dataset,s,mmap,out_path,compress)
     os.remove(mmap_file)
 
-def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,patch_size,bs,num_workers,pin_memory,dtype,queue,event):
+
+def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids,bs=16,num_workers=4,pin_memory=True,compress="deflate"):
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+    #torch.set_num_threads(1)
+
+    if not torch.cuda.is_available():
+        raise Exception("No Cuda device available!")
+
+    if device_ids == "all":
+        world_size = torch.cuda.device_count()
+        device_ids = list(range(world_size))
+    elif type(device_ids) == list:
+        world_size = len(device_ids)
+    elif type(device_ids) == int:
+        device_ids = [device_ids]
+        world_size = 1
+
+    memfiles = create_memfiles(shapes,compress)
+
+    queue = mp.JoinableQueue(100)
+    event = mp.Event()
+    context = mp.spawn(run_inference_queue,
+        args=(device_ids,world_size,dataset_path,net,bs,num_workers,pin_memory,queue,event),
+        nprocs=world_size,
+        join=False)
+
+    complete = True
+    active = list(range(world_size))
+    while (len(active) > 0) and (complete == True):
+        while (not queue.empty()) and (complete == True):
+            d = queue.get()
+            if type(d[1]) == str:
+                print("DONE ",str(d[0]))
+                active.remove(d[0])
+                if d[1] == "ERROR":
+                    complete = False
+            else:
+                unpatchify_window_batch(shapes,memfiles,d[1].numpy(),d[0].numpy())
+            del d
+            queue.task_done()
+    event.set()
+    context.join()
+    
+    if complete:
+        for i,s in shapes.iterrows():
+            out_file = os.path.join(out_path,s["name"]+".tif")
+            out_meta = s["sat_meta"]
+            with rasterio.open(out_file, "w", **out_meta) as dest:
+                dest.write(memfiles[i].read())
+            memfiles[i].close()
+
+
+def run_inference_queue(rank,device_ids,world_size,dataset_path,net,bs,num_workers,pin_memory,queue,event):
     try:
         mp_context = "fork"
-        torch.set_num_threads(1) #prevent memory leakage
+        #torch.set_num_threads(1) #prevent memory leakage
         if num_workers == 0:
             mp_context = None
 
@@ -233,6 +201,7 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
                 del batch
                 del x
                 del idx
+            #torch.cuda.empty_cache()
         queue.put([rank,"DONE"])
         event.wait()
     except Exception as e:
@@ -240,9 +209,31 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,mmap_path,pa
         queue.put([rank,"ERROR"])
         event.wait()
 
+
+
 def custom_collate_fn(data):
     x,idx = zip(*data)
     x = np.stack(x)
     idx = np.stack(idx)
     del data
     return x,idx
+
+def create_memfiles(shapes,compress):
+    memfiles = []
+    memory = rasterio.MemoryFile()
+    for _,shp in shapes.iterrows():
+        out_transform = shp["transform"]
+        out_meta = shp["sat_meta"]
+        
+        height = shp["height"]
+        width = shp["width"]
+        out_meta.update({"driver": "GTiff",
+                        "count":1,
+                        "height": height,
+                        "width": width,
+                        "transform": out_transform,
+                        "compress":compress})
+        mfile = memory.open(**out_meta)
+        memfiles.append(mfile)
+    return memfiles
+
