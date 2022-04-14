@@ -13,6 +13,8 @@ from pytorch_segmentation.models import UNet
 
 
 if __name__ == '__main__':
+    #torch.set_num_threads(1)
+
     area = str(sys.argv[1])
     year = str(sys.argv[2])
     n_gpus = int(sys.argv[3])
