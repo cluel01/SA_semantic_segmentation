@@ -131,7 +131,7 @@ def unpatchify_window_batch(shapes,memfiles,patches,start_idx):
         win = Window(row_off=row_off,col_off=col_off,
                         width=cropped_img.shape[1],height=cropped_img.shape[0])
 
-        memfile.write(cropped_img,window=win,indexes=1,)
+        memfile.write(cropped_img,window=win,indexes=1)
         col_off += co
         row_off += ro
 
