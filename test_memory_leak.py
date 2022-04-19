@@ -57,7 +57,7 @@ def run(rank,d_path,s_path,queue,event):
         for i,batch in enumerate(dl):
             if i % 10 == 0:
                 #print(i+rank)
-                queue.put(batch[0])
+                queue.put([i,batch[0]])
         queue.put(rank)
         event.wait()
         print("Done")
@@ -65,6 +65,7 @@ def run(rank,d_path,s_path,queue,event):
         print(f"Error: GPU {rank} - {e}")
 
 if __name__ == '__main__':
+    torch.set_num_threads(1)
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
@@ -93,7 +94,9 @@ if __name__ == '__main__':
     # with open("test_all.pkl", 'wb') as outp:  
     #             pickle.dump(all, outp, pickle.HIGHEST_PROTOCOL)
 
-    queue = mp.JoinableQueue(1)#mp.Queue()
+
+    #manager = mp.Manager()
+    queue = mp.JoinableQueue()
     event = mp.Event()
 
     context = mp.spawn(run,
@@ -102,16 +105,16 @@ if __name__ == '__main__':
 
     active = list(range(nworkers))
     while (len(active) > 0):
-        d = queue.get()
-        if type(d) == int:
-            print("DONE ",str(d))
-            active.remove(d)
-        else:
-           pass #print(d[1][0][0][0][0])
-        del d
-        queue.task_done()
-        #print(queue.qsize())
-        gc.collect()
+        while not queue.empty():
+            d = queue.get()
+            if type(d) == int:
+                print("DONE ",str(d))
+                active.remove(d)
+            else:
+                pass#print(d[1][0][0][0][0])
+            del d
+            queue.task_done()
+            print(queue.qsize())
     event.set()
     context.join()
 

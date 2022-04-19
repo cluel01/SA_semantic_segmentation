@@ -7,12 +7,14 @@ import torch.multiprocessing as mp
 import os
 from pathlib import Path
 
-from pytorch_segmentation.utils.postprocessing import mosaic_to_raster_mp_queue,mosaic_to_raster
+from pytorch_segmentation.inference import mosaic_to_raster_mp_queue,mosaic_to_raster,mosaic_to_raster_mp_queue_memory
 from pytorch_segmentation.data.inference_dataset import SatInferenceDataset
 from pytorch_segmentation.models import UNet
 
 
 if __name__ == '__main__':
+    #torch.set_num_threads(1)
+
     area = str(sys.argv[1])
     year = str(sys.argv[2])
     n_gpus = int(sys.argv[3])
@@ -26,7 +28,7 @@ if __name__ == '__main__':
     patch_size = [256,256,3] # [x,y,bands]
     overlap = 128
     padding = 64
-    nworkers = 4
+    nworkers = 5
     if n_gpus == 1:
         bs = 150
     else:
@@ -54,13 +56,12 @@ if __name__ == '__main__':
     tmp_d_path = os.path.join(o_path,"tmp_"+year+".pkl")
 
     dataset = SatInferenceDataset(data_file_path=d_path,shape_path=s_path,overlap=overlap,padding=padding)
+    shapes = dataset.shapes.copy()
     dataset.save(tmp_d_path)
-    mmap_shape = (len(dataset),patch_size[0],patch_size[1])
     del dataset
 
     net = UNet(n_channels=patch_size[2], n_classes=2, bilinear=False)
     net.load_state_dict(torch.load(m_path))
 
-    mosaic_to_raster_mp_queue(tmp_d_path,net,o_path,mmap_shape=mmap_shape,
-                        device_ids=device_ids,bs=bs,pin_memory=True,num_workers=nworkers)
+    mosaic_to_raster_mp_queue_memory(tmp_d_path,shapes,net,o_path,device_ids=device_ids,bs=bs,pin_memory=True,num_workers=nworkers)
     os.remove(tmp_d_path)

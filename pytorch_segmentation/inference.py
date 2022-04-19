@@ -134,7 +134,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
 
     memfiles = create_memfiles(shapes,compress)
 
-    queue = mp.JoinableQueue(100)
+    queue = mp.Queue(500)#mp.JoinableQueue(1000)
     event = mp.Event()
     context = mp.spawn(run_inference_queue,
         args=(device_ids,world_size,dataset_path,net,bs,num_workers,pin_memory,queue,event),
@@ -152,9 +152,9 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
                 if d[1] == "ERROR":
                     complete = False
             else:
-                unpatchify_window_batch(shapes,memfiles,d[1].numpy(),d[0].numpy())
+                unpatchify_window_batch(shapes,memfiles,d[1].numpy(),d[0])
             del d
-            queue.task_done()
+            #queue.task_done()
     event.set()
     context.join()
     
@@ -162,7 +162,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
         for i,s in shapes.iterrows():
             out_file = os.path.join(out_path,s["name"]+".tif")
             out_meta = s["sat_meta"]
-            with rasterio.open(out_file, "w", **out_meta) as dest:
+            with rasterio.open(out_file, "w", **out_meta,BIGTIFF='IF_NEEDED') as dest:
                 dest.write(memfiles[i].read())
             memfiles[i].close()
 
@@ -180,8 +180,8 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,bs,num_worke
         torch.cuda.set_device(device_id)
         dataset =  SatInferenceDataset(dataset_path=dataset_path)
         sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
-        #dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        #dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
         net = net.to(rank)
         net.eval()
@@ -190,13 +190,13 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,bs,num_worke
         for batch in dl:
             with torch.no_grad():
                 x,idx = batch
-                #x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
-                x = x.float().to(rank,non_blocking=True)
+                x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
+                #x = x.float().to(rank,non_blocking=True)
                 out = net(x)
                 out = F.softmax(out,dim=1)
                 out = torch.argmax(out,dim=1)
                 out = out.byte().cpu()
-                queue.put([idx[0],out])
+                queue.put([int(idx[0]),out])
                 del out
                 del batch
                 del x
@@ -233,7 +233,7 @@ def create_memfiles(shapes,compress):
                         "width": width,
                         "transform": out_transform,
                         "compress":compress})
-        mfile = memory.open(**out_meta)
+        mfile = memory.open(**out_meta,BIGTIFF='YES',NUM_THREADS=4)
         memfiles.append(mfile)
     return memfiles
 
