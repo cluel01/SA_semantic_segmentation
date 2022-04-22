@@ -113,7 +113,8 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
     os.remove(mmap_file)
 
 
-def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids,bs=16,num_workers=4,pin_memory=True,compress="deflate"):
+def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids,bs=16,
+                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=128):
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
@@ -132,7 +133,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
         device_ids = [device_ids]
         world_size = 1
 
-    memfiles = create_memfiles(shapes,compress)
+    memfiles = create_memfiles(shapes,compress,blocksize)
 
     queue = mp.Queue(500)#mp.JoinableQueue(1000)
     event = mp.Event()
@@ -155,6 +156,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
                 unpatchify_window_batch(shapes,memfiles,d[1].numpy(),d[0])
             del d
             #queue.task_done()
+    queue.close()
     event.set()
     context.join()
     
@@ -162,8 +164,10 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
         for i,s in shapes.iterrows():
             out_file = os.path.join(out_path,s["name"]+".tif")
             out_meta = s["sat_meta"]
-            with rasterio.open(out_file, "w", **out_meta,BIGTIFF='IF_NEEDED') as dest:
-                dest.write(memfiles[i].read())
+            with rasterio.open(out_file, "w", **out_meta,BIGTIFF='YES') as dest:
+                for _, window in memfiles[i].block_windows():
+                    r = memfiles[i].read(window=window)
+                    dest.write(r,window=window)
             memfiles[i].close()
 
 
@@ -218,7 +222,7 @@ def custom_collate_fn(data):
     del data
     return x,idx
 
-def create_memfiles(shapes,compress):
+def create_memfiles(shapes,compress,blocksize):
     memfiles = []
     memory = rasterio.MemoryFile()
     for _,shp in shapes.iterrows():
@@ -232,8 +236,11 @@ def create_memfiles(shapes,compress):
                         "height": height,
                         "width": width,
                         "transform": out_transform,
-                        "compress":compress})
-        mfile = memory.open(**out_meta,BIGTIFF='YES',NUM_THREADS=4)
+                        "compress":compress,
+                        "tiled":True,
+                        "blockxsize":blocksize, 
+                        "blockysize":blocksize})
+        mfile = memory.open(**out_meta,BIGTIFF='YES',NUM_THREADS="ALL_CPUS")
         memfiles.append(mfile)
     return memfiles
 
