@@ -1,19 +1,33 @@
 
+import psutil
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.nn import DataParallel
 import rasterio
+from rasterio.rio.overview import get_maximum_overview_level
 import os
 from tqdm import tqdm
 import time
 import torch.multiprocessing as mp
 from .data.sampler import DistributedEvalSampler
 from .data.inference_dataset import SatInferenceDataset
-from .utils.unpatchify import unpatchify,unpatchify_window,unpatchify_window_batch
+from .utils.unpatchify import unpatchify,unpatchify_window,unpatchify_window_batch,unpatchify_window_queue
 
-def mosaic_to_raster(dataset,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
+import signal
+
+#Wrapper function that can call all different versions
+def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
+                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512):
+    for idx,s in shapes.iterrows():
+        print("Shape: ",idx)
+        mosaic_to_raster_mp_queue_memory_multi(dataset_path,s,idx,net,out_path,device_ids,bs,
+                        num_workers,pin_memory,compress,blocksize)
+    
+
+
+def mosaic_to_raster_dp(dataset,net,out_path,device_ids,bs=16,out_size=256,num_workers=4,pin_memory=True,dtype="uint8",compress="deflate"):
     #os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if not torch.cuda.is_available():
@@ -112,9 +126,8 @@ def mosaic_to_raster_mp_queue(dataset_path,net,out_path,device_ids,mmap_shape,bs
                 unpatchify_window(dataset,s,mmap,out_path,compress)
     os.remove(mmap_file)
 
-
-def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids,bs=16,
-                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=128):
+def mosaic_to_raster_mp_queue_memory(dataset_path,shape,shape_idx,net,out_path,device_ids,bs=16,
+                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512):
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
@@ -133,45 +146,151 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shapes,net,out_path,device_ids
         device_ids = [device_ids]
         world_size = 1
 
-    memfiles = create_memfiles(shapes,compress,blocksize)
+    n = np.prod(shape["grid_shape"])
+    nbatches = int(np.ceil(n/bs))
 
-    queue = mp.Queue(500)#mp.JoinableQueue(1000)
+    memfile = create_memfile(shape,compress,blocksize)
+
+    queue = mp.JoinableQueue(500)
+    #queue = mp.Queue(500)#mp.Queue(500)#mp.JoinableQueue(1000)
     event = mp.Event()
     context = mp.spawn(run_inference_queue,
-        args=(device_ids,world_size,dataset_path,net,bs,num_workers,pin_memory,queue,event),
+        args=(device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,queue,event),
         nprocs=world_size,
         join=False)
 
     complete = True
     active = list(range(world_size))
-    while (len(active) > 0) and (complete == True):
-        while (not queue.empty()) and (complete == True):
-            d = queue.get()
-            if type(d[1]) == str:
-                print("DONE ",str(d[0]))
-                active.remove(d[0])
-                if d[1] == "ERROR":
-                    complete = False
-            else:
-                unpatchify_window_batch(shapes,memfiles,d[1].numpy(),d[0])
-            del d
-            #queue.task_done()
+    c = 0
+    print("Queue PID: ",os.getpid())
+    with tqdm(total=nbatches,position=0) as pbar:
+        while (len(active) > 0) and (complete == True):
+            while (not queue.empty()) and (complete == True):
+                d = queue.get()
+                if type(d[1]) == str:
+                    print("DONE ",str(d[0]))
+                    active.remove(d[0])
+                    if d[1] == "ERROR":
+                        complete = False
+                else:
+                    unpatchify_window_batch(shape,memfile,d[1].numpy(),d[0])
+                    c += 1
+                    pbar.update(1)
+                    if (c % 500) == 0:
+                        #pbar.update(100)
+                        print("Queue length: ",queue.qsize())
+                        print("Memory allocated (MB): ",psutil.Process().memory_info().rss / (1024 * 1024))
+                del d
+                queue.task_done()
     queue.close()
     event.set()
     context.join()
-    
+
     if complete:
-        for i,s in shapes.iterrows():
-            out_file = os.path.join(out_path,s["name"]+".tif")
-            out_meta = s["sat_meta"]
-            with rasterio.open(out_file, "w", **out_meta,BIGTIFF='YES') as dest:
-                for _, window in memfiles[i].block_windows():
-                    r = memfiles[i].read(window=window)
-                    dest.write(r,window=window)
-            memfiles[i].close()
+        
+        start = time.time()
+        out_file = os.path.join(out_path,shape["name"]+".tif")
+        out_meta = shape["sat_meta"]
+        out_meta.update({"driver":"COG"})
+        with rasterio.open(out_file, "w", **out_meta) as dest:
+            for _, window in memfile.block_windows():
+                r = memfile.read(window=window)
+                dest.write(r,window=window)
+        memfile.close()
+        end = time.time()
+        print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
+
+def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_path,device_ids,bs=16,
+                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512):
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+    
+    if not torch.cuda.is_available():
+        raise Exception("No Cuda device available!")
+
+    if device_ids == "all":
+        world_size = torch.cuda.device_count()
+        device_ids = list(range(world_size))
+    elif type(device_ids) == list:
+        world_size = len(device_ids)
+    elif type(device_ids) == int:
+        device_ids = [device_ids]
+        world_size = 1
+
+    n = int(np.prod(shape["grid_shape"]))
+
+    memfile = create_memfile(shape,compress,blocksize) #create_files(shapes,out_path,compress,blocksize) #
+
+    in_queue = mp.JoinableQueue(100)
+    out_queue = mp.JoinableQueue(1000)
+    #queue = mp.Queue(500)#mp.Queue(500)#mp.JoinableQueue(1000)
+    event = mp.Event()
+    context = mp.spawn(run_inference_queue,
+        args=(device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event),
+        nprocs=world_size,
+        join=False)
+
+    consumers = [mp.Process(target=queue_consumer, args=(in_queue,out_queue,shape), daemon=True)
+                 for _ in range(world_size)]
+    
+    for p in consumers:
+         p.start()
+
+    complete = True
+    active = list(range(world_size))
+    c = 0
+    pid = os.getpid()
+    print("Queue PID: ",pid)
+
+    with tqdm(total=n,position=0) as pbar:
+        while (len(active) > 0) and (complete == True):
+            while (not out_queue.empty()) and (complete == True):
+                d = out_queue.get()
+                if type(d[1]) == str:
+                    print("DONE ",str(d[0]))
+                    active.remove(d[0])
+                    if d[1] == "ERROR":
+                        complete = False
+                else:
+                    memfile.write(d[1],window=d[0],indexes=1)
+                    c += 1
+                    pbar.update(1)
+                    if (c % 50000) == 0:
+                        print("In-Queue length: ",in_queue.qsize())
+                        print("Out-Queue length: ",out_queue.qsize())
+                        print("Memory allocated (MB): ",psutil.Process().memory_info().rss / (1024 * 1024))
+                del d
+                out_queue.task_done()
+
+    for _ in range(world_size): #stop consumer 
+        in_queue.put([None,"QUIT"])
+
+    time.sleep(1)
+    in_queue.close()
+    out_queue.close()
+    event.set()
+    context.join()
+
+    stop_child_pids(pid) # to clean up memory 
+    time.sleep(1)
+
+    if complete:
+        start = time.time()
+        out_file = os.path.join(out_path,shape["name"]+".tif")
+        out_meta = shape["sat_meta"]
+        out_meta.update({"driver":"COG"})
+        with rasterio.open(out_file, "w", **out_meta) as dest:
+            for _, window in memfile.block_windows():
+                r = memfile.read(window=window)
+                dest.write(r,window=window)
+        memfile.close()
+        end = time.time()
+        print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
 
 
-def run_inference_queue(rank,device_ids,world_size,dataset_path,net,bs,num_workers,pin_memory,queue,event):
+def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,queue,event):
     try:
         mp_context = "fork"
         #torch.set_num_threads(1) #prevent memory leakage
@@ -183,29 +302,25 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,bs,num_worke
         os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
         torch.cuda.set_device(device_id)
         dataset =  SatInferenceDataset(dataset_path=dataset_path)
-        sampler = DistributedEvalSampler(dataset,num_replicas=world_size,rank=rank)
-        #dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
-        dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        shape = dataset.shapes.iloc[shape_idx]
+        start_idx = shape["start_idx"]
+        end_idx  = start_idx + np.prod(shape["grid_shape"])
+        sampler = DistributedEvalSampler(dataset,start_idx=start_idx,end_idx=end_idx,num_replicas=world_size,rank=rank)
+        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        #dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
         net = net.to(rank)
         net.eval()
-        if rank == 0:
-            dl = tqdm(dl,position=0)
         for batch in dl:
             with torch.no_grad():
                 x,idx = batch
-                x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
-                #x = x.float().to(rank,non_blocking=True)
+                #x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
+                x = x.float().to(rank,non_blocking=True)
                 out = net(x)
                 out = F.softmax(out,dim=1)
                 out = torch.argmax(out,dim=1)
                 out = out.byte().cpu()
                 queue.put([int(idx[0]),out])
-                del out
-                del batch
-                del x
-                del idx
-            #torch.cuda.empty_cache()
         queue.put([rank,"DONE"])
         event.wait()
     except Exception as e:
@@ -213,7 +328,19 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,net,bs,num_worke
         queue.put([rank,"ERROR"])
         event.wait()
 
-
+def queue_consumer(in_queue,out_queue,shape):
+    complete = True
+    while complete == True:
+        d = in_queue.get()
+        if type(d[1]) == str:
+            if d[1] =="QUIT":
+                in_queue.task_done()
+                return
+            out_queue.put(d)
+        else:
+            unpatchify_window_queue(shape,d[1].numpy(),d[0],out_queue)
+        del d
+        in_queue.task_done()
 
 def custom_collate_fn(data):
     x,idx = zip(*data)
@@ -222,16 +349,16 @@ def custom_collate_fn(data):
     del data
     return x,idx
 
-def create_memfiles(shapes,compress,blocksize):
-    memfiles = []
-    memory = rasterio.MemoryFile()
-    for _,shp in shapes.iterrows():
-        out_transform = shp["transform"]
-        out_meta = shp["sat_meta"]
+def create_memfile(shape,compress,blocksize):
+    with rasterio.Env(GDAL_CACHEMAX=1024):
+        memory = rasterio.MemoryFile()
+        out_transform = shape["transform"]
+        out_meta = shape["sat_meta"]
         
-        height = shp["height"]
-        width = shp["width"]
+        height = shape["height"]
+        width = shape["width"]
         out_meta.update({"driver": "GTiff",
+                        "overwrite":True,
                         "count":1,
                         "height": height,
                         "width": width,
@@ -239,8 +366,43 @@ def create_memfiles(shapes,compress,blocksize):
                         "compress":compress,
                         "tiled":True,
                         "blockxsize":blocksize, 
-                        "blockysize":blocksize})
-        mfile = memory.open(**out_meta,BIGTIFF='YES',NUM_THREADS="ALL_CPUS")
+                        "blockysize":blocksize,
+                        "BIGTIFF":'YES',
+                        #"predictor":2,
+                        "NUM_THREADS":"ALL_CPUS"})
+        mfile = memory.open(**out_meta)
+        return mfile
+
+def create_files(shapes,out_path,compress,blocksize):
+    memfiles = []
+    for _,shp in shapes.iterrows():
+        out_transform = shp["transform"]
+        out_meta = shp["sat_meta"]
+        out_file = os.path.join(out_path,shp["name"]+".tif")
+        height = shp["height"]
+        width = shp["width"]
+        out_meta.update({"driver": "GTiff",
+                        "count":1,
+                        "overwrite":True,
+                        "height": height,
+                        "width": width,
+                        "transform": out_transform,
+                        "compress":compress,
+                        "tiled":True,
+                        "blockxsize":blocksize, 
+                        "blockysize":blocksize,
+                        "BIGTIFF":'YES',
+                        "NUM_THREADS":"ALL_CPUS"})
+        mfile = rasterio.open(out_file,"w",**out_meta)
         memfiles.append(mfile)
     return memfiles
+
+def stop_child_pids(pid):
+    try:
+      parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+      return
+    children = parent.children(recursive=True)
+    for process in children:
+      process.send_signal(signal.SIGTERM)
 

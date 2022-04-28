@@ -95,16 +95,18 @@ def unpatchify(patches,grid_shape,padding):
     return output_arr.transpose(2,0,1)
 
 
-def unpatchify_window_batch(shapes,memfiles,patches,start_idx):
+def unpatchify_window_batch(shape,memfile,patches,start_idx):
     #So far only for one shape at once possible!
-    shape_start_idx = shapes.iloc[0]["start_idx"]
-    ny,nx = shapes.iloc[0]["grid_shape"]
-    ypad,ypad_extra,xpad,xpad_extra = shapes.iloc[0]["padding"]    
-    memfile = memfiles[0]
+    shape_start_idx = shape["start_idx"]
+    ny,nx = shape["grid_shape"]
+    ypad,ypad_extra,xpad,xpad_extra = shape["padding"] 
+
 
     patch_size = patches[0].shape
     grid = np.arange(ny*nx).reshape(ny,nx)
     y,x = np.where(grid == start_idx)
+    y = int(y)
+    x = int(x)
 
     col_off = (patch_size[0] - xpad*2) * x  
     row_off = (patch_size[1] - ypad*2) * y
@@ -135,4 +137,94 @@ def unpatchify_window_batch(shapes,memfiles,patches,start_idx):
         col_off += co
         row_off += ro
 
+def unpatchify_window_queue(shape,patches,start_idx,out_queue):
+    #So far only for one shape at once possible!
+    shape_start_idx = shape["start_idx"]
+    ny,nx = shape["grid_shape"]
+    ypad,ypad_extra,xpad,xpad_extra = shape["padding"] 
 
+
+    patch_size = patches[0].shape
+    grid = np.arange(ny*nx).reshape(ny,nx)
+    y,x = np.where(grid == start_idx)
+    y = int(y)
+    x = int(x)
+
+    col_off = (patch_size[0] - xpad*2) * x  
+    row_off = (patch_size[1] - ypad*2) * y
+    for i in range(len(patches)):
+        img = patches[i]
+
+        co,ro = 0,0
+        if (x != nx-1) and (y != ny-1):
+            cropped_img = img[ypad:img.shape[0]-ypad,xpad:img.shape[1]-xpad]
+            co = cropped_img.shape[1]
+            x += 1
+        elif (x == nx-1) and (y != ny-1):
+            cropped_img = img[ypad:img.shape[0]-ypad,xpad:img.shape[1]-xpad_extra]
+            ro = cropped_img.shape[0]
+            co = -col_off
+            x = 0
+            y += 1
+        elif (x != nx-1) and (y == ny-1):
+            cropped_img = img[ypad:img.shape[0]-ypad_extra,xpad:img.shape[1]-xpad]
+            co = cropped_img.shape[1]
+            x += 1
+        elif (x == nx-1) and (y == ny-1):
+            cropped_img = img[ypad:img.shape[0]-ypad_extra,xpad:img.shape[1]-xpad_extra]
+        win = Window(row_off=row_off,col_off=col_off,
+                        width=cropped_img.shape[1],height=cropped_img.shape[0])
+
+        out_queue.put([win,cropped_img])
+        col_off += co
+        row_off += ro
+
+
+# def unpatchify_window_queue(shape,patches,start_idx,out_queue):
+#     #So far only for one shape at once possible!
+#     shape_start_idx = shape["start_idx"]
+#     ny,nx = shape["grid_shape"]
+#     ypad,ypad_extra,xpad,xpad_extra = shape["padding"]    
+#     #xpad_extra = xpad + xpad_extra
+#     #ypad_extra = ypad + ypad_extra
+
+#     patch_size = patches[0].shape
+#     grid = np.arange(ny*nx).reshape(ny,nx)
+#     y,x = np.where(grid == start_idx)
+
+#     col_off = (patch_size[0] - xpad*2) * x  
+#     row_off = (patch_size[1] - ypad*2) * y
+
+#     for i in range(len(patches)):
+#         img = patches[i]
+
+#         t_x,t_y = int(x),int(y)
+#         t=0
+#         co,ro = 0,0
+#         if (x != nx-1) and (y != ny-1):
+#             t += 1
+#             cropped_img = img[ypad:img.shape[0]-ypad,xpad:img.shape[1]-xpad]
+#             co = cropped_img.shape[1]
+#             x += 1
+#         elif (x == nx-1) and (y != ny-1):
+#             t += 5
+#             cropped_img = img[ypad:img.shape[0]-ypad,xpad:img.shape[1]-xpad_extra]
+#             ro = cropped_img.shape[0]
+#             co = -col_off
+#             x = 0
+#             y += 1
+#         elif (x != nx-1) and (y == ny-1):
+#             t += 10
+#             cropped_img = img[ypad:img.shape[0]-ypad_extra,xpad:img.shape[1]-xpad]
+#             co = cropped_img.shape[1]
+#             x += 1
+#         elif (x == nx-1) and (y == ny-1):
+#             t += 20
+#             cropped_img = img[ypad:img.shape[0]-ypad_extra,xpad:img.shape[1]-xpad_extra]
+        
+#         win = Window(row_off=row_off,col_off=col_off,
+#                         width=cropped_img.shape[1],height=cropped_img.shape[0])
+
+#         out_queue.put([win,cropped_img,t_x,t_y,x,y,t,ny,nx])
+#         col_off += co
+#         row_off += ro
