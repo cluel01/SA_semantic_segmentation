@@ -52,7 +52,7 @@ class DistributedEvalSampler(Sampler):
         ...     train(loader)
     """
 
-    def __init__(self, dataset, num_replicas=None, rank=None):
+    def __init__(self, dataset,start_idx=0, end_idx = None,num_replicas=None, rank=None):
         if num_replicas is None:
             if not dist.is_available():
                 raise RuntimeError("Requires distributed package to be available")
@@ -65,7 +65,15 @@ class DistributedEvalSampler(Sampler):
         self.num_replicas = num_replicas
         self.rank = rank
 
-        self.total_size = len(self.dataset)    
+        if rank >= num_replicas:
+            raise ValueError(f"Not enough replicas for rank {rank}")
+
+        self.start_idx = start_idx
+        if end_idx is None:
+            self.end_idx = len(dataset)
+        else:
+            self.end_idx = end_idx
+        self.total_size = self.end_idx-self.start_idx
         self.num_samples = self._get_num_samples()          # true value without extra samples
 
 
@@ -88,7 +96,7 @@ class DistributedEvalSampler(Sampler):
     def _get_indices(self):
         threshold = self.total_size %  self.num_replicas
         idx = 0
-        start_idx = 0
+        start_idx = self.start_idx
         while idx < self.rank:
             if idx < threshold:
                 start_idx += self.total_size //  self.num_replicas+1
