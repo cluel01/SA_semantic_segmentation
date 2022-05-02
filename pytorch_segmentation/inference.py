@@ -1,4 +1,4 @@
-
+#from rio_cogeo.cogeo import cog_translate
 import psutil
 import numpy as np
 import torch
@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.nn import DataParallel
 import rasterio
-from rasterio.rio.overview import get_maximum_overview_level
+from osgeo import gdal
 import os
 from tqdm import tqdm
 import time
@@ -14,16 +14,33 @@ import torch.multiprocessing as mp
 from .data.sampler import DistributedEvalSampler
 from .data.inference_dataset import SatInferenceDataset
 from .utils.unpatchify import unpatchify,unpatchify_window,unpatchify_window_batch,unpatchify_window_queue
+from .utils.cog_translate import cog_translate
 
 import signal
 
 #Wrapper function that can call all different versions
 def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
                     num_workers=4,pin_memory=True,compress="deflate",blocksize=512):
+    files = []
+    print("Total number of shapes: ",len(shapes))
     for idx,s in shapes.iterrows():
         print("Shape: ",idx)
-        mosaic_to_raster_mp_queue_memory_multi(dataset_path,s,idx,net,out_path,device_ids,bs,
+        ofile = mosaic_to_raster_mp_queue_memory_multi(dataset_path,s,idx,net,out_path,device_ids,bs,
                         num_workers,pin_memory,compress,blocksize)
+        files.append(ofile)
+    
+    if len(shapes) > 1:
+        vrt_file = os.path.join(out_path,"tmp_vrt.vrt")
+        out_file = os.path.join(out_path,"mask_"+time.strftime("%d_%m_%Y_%H%M%S")+".tif")
+        vrt = gdal.BuildVRT(vrt_file,files)
+        vrt = None
+        os.system("gdal_translate -of GTiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES -co COPY_SRC_OVERVIEWS=YES " + vrt_file + " " + out_file)
+        os.remove(vrt_file)
+        for i in files:
+            os.remove(i)
+        print("Created Tif file: ",out_file)
+   
+    
     
 
 
@@ -201,7 +218,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shape,shape_idx,net,out_path,d
         print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
 
 def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_path,device_ids,bs=16,
-                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512):
+                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0):
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
@@ -221,7 +238,7 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
 
     n = int(np.prod(shape["grid_shape"]))
 
-    memfile = create_memfile(shape,compress,blocksize) #create_files(shapes,out_path,compress,blocksize) #
+    memfile = create_memfile(shape,compress,blocksize,nodata) #create_files(shapes,out_path,compress,blocksize) #
 
     in_queue = mp.JoinableQueue(100)
     out_queue = mp.JoinableQueue(1000)
@@ -232,7 +249,7 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
         nprocs=world_size,
         join=False)
 
-    consumers = [mp.Process(target=queue_consumer, args=(in_queue,out_queue,shape), daemon=True)
+    consumers = [mp.Process(target=queue_consumer, args=(in_queue,out_queue,shape), daemon=False)
                  for _ in range(world_size)]
     
     for p in consumers:
@@ -276,18 +293,40 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
     stop_child_pids(pid) # to clean up memory 
     time.sleep(1)
 
+    out_file = None
+    # if complete:
+    #     start = time.time()
+    #     out_file = os.path.join(out_path,shape["name"]+".tif")
+    #     out_meta = shape["sat_meta"]
+    #     out_meta.update({"driver":"COG"})
+    #     print(out_meta)
+    #     with rasterio.open(out_file, "w", **out_meta) as dest:
+    #         for _, window in memfile.block_windows():
+    #             r = memfile.read(window=window)
+    #             dest.write(r,window=window)
+    #     memfile.close()
+    #     end = time.time()
+    #     print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
     if complete:
         start = time.time()
-        out_file = os.path.join(out_path,shape["name"]+".tif")
         out_meta = shape["sat_meta"]
-        out_meta.update({"driver":"COG"})
-        with rasterio.open(out_file, "w", **out_meta) as dest:
-            for _, window in memfile.block_windows():
-                r = memfile.read(window=window)
-                dest.write(r,window=window)
+        out_file = os.path.join(out_path,shape["name"]+".tif")
+        #out_meta.update({"driver":"COG"})
+        #TODO do this without rio-cogeo package
+        cog_translate(
+            memfile,
+            out_file,
+            out_meta
+            # in_memory=True,
+            # quiet=True,
+            # allow_intermediate_compression=True
+        )
+
+
         memfile.close()
         end = time.time()
         print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
+    return out_file
 
 
 def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,queue,event):
@@ -316,11 +355,12 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
                 x,idx = batch
                 #x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
                 x = x.float().to(rank,non_blocking=True)
+                b_idx = int(idx[0]) - start_idx
                 out = net(x)
                 out = F.softmax(out,dim=1)
                 out = torch.argmax(out,dim=1)
                 out = out.byte().cpu()
-                queue.put([int(idx[0]),out])
+                queue.put([b_idx,out])
         queue.put([rank,"DONE"])
         event.wait()
     except Exception as e:
@@ -349,8 +389,8 @@ def custom_collate_fn(data):
     del data
     return x,idx
 
-def create_memfile(shape,compress,blocksize):
-    with rasterio.Env(GDAL_CACHEMAX=1024):
+def create_memfile(shape,compress,blocksize,nodata):
+    with rasterio.Env(GDAL_CACHEMAX=1024,GDAL_TIFF_INTERNAL_MASK=True,GDAL_TIFF_OVR_BLOCKSIZE=128): #TODO change to variable
         memory = rasterio.MemoryFile()
         out_transform = shape["transform"]
         out_meta = shape["sat_meta"]
@@ -368,6 +408,7 @@ def create_memfile(shape,compress,blocksize):
                         "blockxsize":blocksize, 
                         "blockysize":blocksize,
                         "BIGTIFF":'YES',
+                        "nodata":nodata,
                         #"predictor":2,
                         "NUM_THREADS":"ALL_CPUS"})
         mfile = memory.open(**out_meta)

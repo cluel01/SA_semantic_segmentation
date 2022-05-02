@@ -9,42 +9,49 @@ import numpy as np
 from patchify import patchify
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+import pickle
 
 from ..utils.preprocessing import pad_image_even
 
 class RwandaDataset(Dataset):
-    def __init__(self,data_file_path=None,shape_path=None,transform=None,patch_size=[256,256,3],overlap=0,padding=False,pad_value=0,file_extension=".tif",X=None,y=None,indices=None):
-        self.transform = transform
-        self.patch_size = patch_size
-        self.overlap = overlap
-        self.padding = padding
-        self.pad_value = pad_value
-        self.data_file_path = data_file_path
-        self.shape_path = shape_path
+    def __init__(self,dataset_path=None,data_file_path=None,shape_path=None,transform=None,patch_size=[256,256,3],overlap=0,padding=False,pad_value=0,file_extension=".tif",X=None,y=None,indices=None):
+        if dataset_path is None:
+            if data_file_path is not None:
+                self.transform = transform
+                self.patch_size = patch_size
+                self.overlap = overlap
+                self.padding = padding
+                self.pad_value = pad_value
+                self.data_file_path = data_file_path
+                self.shape_path = shape_path
 
-        if (X is not None) and (y is not None):
-            assert len(X) == len(y)
-            self.X = torch.as_tensor(X).float().contiguous()
-            self.y = torch.as_tensor(y).long().contiguous()
+                if (X is not None) and (y is not None):
+                    assert len(X) == len(y)
+                    self.X = torch.as_tensor(X).float().contiguous()
+                    self.y = torch.as_tensor(y).long().contiguous()
+                else:
+                    shape_df = gdp.read_file(shape_path).geometry
+                    raster_files = [os.path.join(data_file_path,i) for i in os.listdir(data_file_path) if i.endswith(file_extension)]
+                    patches_satellite,patches_mask = self._create_patches(raster_files,shape_df)
+                    
+                    del shape_df
+
+                    X = np.array(patches_satellite)/255
+                    y = np.array(patches_mask)
+
+                    assert len(X) == len(y)
+
+                    self.X = torch.as_tensor(X).float().contiguous()
+                    self.y = torch.as_tensor(y).long().contiguous()
+
+                if indices is None:
+                    self.indices = np.arange(len(self.y))
+                else:
+                    self.indices = indices
+            else:
+                raise ValueError("Missing dataset_path or data_file_path!")
         else:
-            shape_df = gdp.read_file(shape_path).geometry
-            raster_files = [os.path.join(data_file_path,i) for i in os.listdir(data_file_path) if i.endswith(file_extension)]
-            patches_satellite,patches_mask = self._create_patches(raster_files,shape_df)
-            
-            del shape_df
-
-            X = np.array(patches_satellite)/255
-            y = np.array(patches_mask)
-
-            assert len(X) == len(y)
-
-            self.X = torch.as_tensor(X).float().contiguous()
-            self.y = torch.as_tensor(y).long().contiguous()
-
-        if indices is None:
-            self.indices = np.arange(len(self.y))
-        else:
-            self.indices = indices
+            self.load(dataset_path)
 
     def __len__(self):
         return len(self.X)
@@ -59,6 +66,27 @@ class RwandaDataset(Dataset):
             image,mask = sample
 
         return {"x":image, "y":mask}
+
+    def save(self,filename):
+        if not os.path.isfile(filename): 
+            cfg = self._get_config()
+            obj = [self.X,self.y,self.indices,cfg]
+            with open(filename, 'wb') as outp:  
+                pickle.dump(obj, outp, pickle.HIGHEST_PROTOCOL)
+            del obj
+        else:
+            print("INFO: File already exists, skip saving!")
+
+    def load(self,filename):
+        with open(filename, 'rb') as inp:
+            obj = pickle.load(inp)
+        self.X,self.y,self.indices,cfg  = obj
+        for k in cfg.keys():
+            setattr(self,k,cfg[k])
+
+    def _get_config(self):
+        return {"transform":self.transform,"patch_size":self.patch_size,"overlap":self.overlap,"padding":self.padding,"pad_value":self.pad_value,
+            	"data_file_path":self.data_file_path,"shape_path":self.shape_path}
 
     def get_img(self,idx):
         image = self.X[idx]
