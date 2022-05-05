@@ -8,7 +8,10 @@ from rasterio.shutil import copy
 def cog_translate(dataset,out_file,out_meta,resampling="nearest"):
     with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True,GDAL_TIFF_OVR_BLOCKSIZE=128):
         out_meta = out_meta.copy()
-        tilesize = min(int(out_meta["blockxsize"]), int(out_meta["blockysize"]))
+        if "blocksize" in out_meta:
+            tilesize = out_meta["blocksize"]
+        else:
+            tilesize = min(int(out_meta["blockxsize"]), int(out_meta["blockysize"]))
 
         overview_level = get_maximum_overview_level(
                             dataset.width, dataset.height, minsize=tilesize

@@ -34,10 +34,11 @@ class InMemorySatDataset(Dataset):
 
                 assert len(patches_masks) == len(patches_data)
 
-                X = np.array(patches_data)/255
+                X = np.array(patches_data)
                 y = np.array(patches_masks)
 
-                self.X = torch.as_tensor(X).float().contiguous()
+                X = torch.as_tensor(X).float().contiguous()
+                self.X = X / 255
                 self.y = torch.as_tensor(y).long().contiguous()
                 
                 del X

@@ -15,9 +15,9 @@ from ..utils.preprocessing import pad_image_even
 
 class RwandaDataset(Dataset):
     def __init__(self,dataset_path=None,data_file_path=None,shape_path=None,transform=None,patch_size=[256,256,3],overlap=0,padding=False,pad_value=0,file_extension=".tif",X=None,y=None,indices=None):
-        if dataset_path is None:
+        self.transform = transform
+        if (dataset_path is None) or (not os.path.isfile(dataset_path)):
             if data_file_path is not None:
-                self.transform = transform
                 self.patch_size = patch_size
                 self.overlap = overlap
                 self.padding = padding
@@ -35,15 +35,16 @@ class RwandaDataset(Dataset):
                     patches_satellite,patches_mask = self._create_patches(raster_files,shape_df)
                     
                     del shape_df
-
-                    X = np.array(patches_satellite)/255
-                    y = np.array(patches_mask)
-
+                    # X = np.empty(tuple((len(patches_satellite),*patch_size[::-1])),dtype="uint8")
+                    # for i in range(len(patches_satellite)):
+                    #     X[i,:,:,:] = patches_satellite[i]
+                    X = np.stack(patches_satellite)
+                    y = np.stack(patches_mask)
                     assert len(X) == len(y)
 
-                    self.X = torch.as_tensor(X).float().contiguous()
-                    self.y = torch.as_tensor(y).long().contiguous()
-
+                    X = torch.from_numpy(X).float().contiguous()
+                    self.y = torch.from_numpy(y).long().contiguous()
+                    self.X = X / 255
                 if indices is None:
                     self.indices = np.arange(len(self.y))
                 else:
@@ -85,7 +86,7 @@ class RwandaDataset(Dataset):
             setattr(self,k,cfg[k])
 
     def _get_config(self):
-        return {"transform":self.transform,"patch_size":self.patch_size,"overlap":self.overlap,"padding":self.padding,"pad_value":self.pad_value,
+        return {"patch_size":self.patch_size,"overlap":self.overlap,"padding":self.padding,"pad_value":self.pad_value,
             	"data_file_path":self.data_file_path,"shape_path":self.shape_path}
 
     def get_img(self,idx):
@@ -130,9 +131,15 @@ class RwandaDataset(Dataset):
                 
                 if self.padding: 
                     satellite_area_arr,_ = pad_image_even(satellite_area_arr,self.patch_size,self.overlap)
+
+                if (satellite_area_arr.shape[1] < self.patch_size[0]) or (satellite_area_arr.shape[1] < self.patch_size[0]):
+                    print(f"Shape {f} is too small for patch size with size: {satellite_area_arr.shape}")
+                    continue
+
                 patches = patchify(satellite_area_arr, 
                                         (self.patch_size[2], self.patch_size[0], self.patch_size[1]), 
                                         step=self.patch_size[0]-self.overlap)[0]
+
                 reshaped_patches = np.reshape(patches, 
                                                 (patches.shape[0]*patches.shape[1], 
                                                 patches.shape[2], patches.shape[3], patches.shape[3]))

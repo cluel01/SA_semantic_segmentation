@@ -12,7 +12,7 @@ import pandas as pd
 
 ## SatInferenceDataset for containing satellite imagery areas based on given shapes -> only returning X without mask
 class SatInferenceDataset(Dataset):
-    def __init__(self,dataset_path=None,data_file_path=None,shape_path=None,shape_idx=None,transform=None,patch_size=[256,256,3],overlap=128,padding=64,nodata=255,file_extension=".shp"):
+    def __init__(self,dataset_path=None,data_file_path=None,shape_file=None,shape_idx=None,transform=None,patch_size=[256,256,3],overlap=128,padding=64,nodata=255):
         if dataset_path is None:
             if data_file_path is not None:
                 self.transform = transform
@@ -27,43 +27,36 @@ class SatInferenceDataset(Dataset):
                     print("WARNING: nodata values might cause problems for the edge patches! nodata value of 255 is recommended")
                 self.nodata = nodata
                 self.data_file_path = data_file_path
-                self.shape_path = shape_path
+                self.shape_file = shape_file
                 self.shape_idx = shape_idx
 
                 patches = []
                 shapes = []
-                shape_idx = 0
-                
-                if type(shape_path) == list:
-                    shape_files = shape_path
-                elif type(shape_path) == str:
-                    shape_files = [shape_path]
-                #shape_files = [os.path.join(shape_path,i) for i in os.listdir(shape_path) if i.endswith(file_extension)]
+
                 with rasterio.open(data_file_path) as src_sat:
                     self.sat_meta = src_sat.meta.copy()
                     sat_shape = geometry.box(*src_sat.bounds)
                     start_idx = 0
-                    for f in shape_files:
-                        with fiona.open(f) as src_shp:
-                            if self.shape_idx is None:
-                                src_shape = src_shp
-                            else:
-                                src_shape = [src_shp[self.shape_idx]]
-                            for i,shp in enumerate(src_shape):
-                                name = os.path.basename(f).split(".")[0] + "_" + str(i+1)
-                                s = geometry.shape(shp["geometry"])
-                                if not sat_shape.intersects(s):
-                                    print(f"Shape {name} does not intersect!")
-                                    continue
-                                win = from_bounds(*s.bounds,src_sat.transform)
-                                pad = self._get_padding(win,patch_size,overlap,padding)
-                                win_list,grid_shape = self._patchify_window(win,src_sat,patch_size,overlap,padding)
-                                shapes.append({"shape_id":shape_idx,"transform":src_sat.window_transform(win),"padding":pad,
-                                                "start_idx":start_idx,"grid_shape":grid_shape,"name":name,
-                                                "width":win.width,"height":win.height,"sat_meta":src_sat.meta.copy()})
-                                patches.append(win_list)
-                                shape_idx += 1
-                                start_idx += len(win_list)
+                    with fiona.open(shape_file) as src_shp:
+                        if shape_idx is None:
+                            s_idxs = range(len(src_shp))
+                        else:
+                            s_idxs = shape_idx
+                        for i in s_idxs:
+                            shp = src_shp[i]
+                            name = os.path.basename(shape_file).split(".")[0] + "_" + str(i+1)
+                            s = geometry.shape(shp["geometry"])
+                            if not sat_shape.intersects(s):
+                                print(f"Shape {name} does not intersect!")
+                                continue
+                            win = from_bounds(*s.bounds,src_sat.transform)
+                            pad = self._get_padding(win,patch_size,overlap,padding)
+                            win_list,grid_shape = self._patchify_window(win,src_sat,patch_size,overlap,padding)
+                            shapes.append({"shape_id":i,"transform":src_sat.window_transform(win),"padding":pad,
+                                            "start_idx":start_idx,"grid_shape":grid_shape,"name":name,
+                                            "width":win.width,"height":win.height,"sat_meta":src_sat.meta.copy()})
+                            patches.append(win_list)
+                            start_idx += len(win_list)
 
                 self.patches = np.vstack(patches)
                 self.shapes = pd.DataFrame(shapes)
@@ -85,8 +78,8 @@ class SatInferenceDataset(Dataset):
                     top,bottom,left,right = padding
                     img = np.pad(img,[(0,0),(top,bottom),(left,right)],"edge")
                     #img = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=self.pad_value)
-                img = img / 255
-        img = torch.from_numpy(img).float().contiguous() 
+        img = torch.from_numpy(img).float().contiguous()
+        img = img / 255
         if self.transform:
             img = self.transform(img)
         return img,index
@@ -96,7 +89,7 @@ class SatInferenceDataset(Dataset):
 
     def _get_config(self):
         return {"sat_meta":self.sat_meta,"transform":self.transform,"patch_size":self.patch_size,"t_patch_size":self.t_patch_size,"shape_idx":self.shape_idx,
-                "overlap":self.overlap,"padding":self.padding,"nodata":self.nodata,"data_file_path":self.data_file_path,"shape_path":self.shape_path}
+                "overlap":self.overlap,"padding":self.padding,"nodata":self.nodata,"data_file_path":self.data_file_path,"shape_file":self.shape_file,"shape_idx":self.shape_idx}
 
     def save(self,filename):
         cfg = self._get_config()

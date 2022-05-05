@@ -121,3 +121,14 @@ class ColorJitter:
     def __call__(self, image, target):
         image = self.transform(image)
         return image, target
+
+class RandomRotation:
+    def __init__(self, degrees,fill=0):
+        self.degrees = degrees
+        self.fill = fill
+
+    def __call__(self, image, target):
+        angle = int(np.random.choice(range(self.degrees)))
+        image = F.rotate(image,angle=angle,fill=self.fill)
+        target = F.rotate(target.unsqueeze(0),angle=angle,fill=self.fill)
+        return image,target.squeeze()

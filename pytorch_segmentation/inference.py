@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.nn import DataParallel
 import rasterio
+# from rasterio.enums import Resampling
+# from rasterio.vrt import WarpedVRT
 from osgeo import gdal
 import os
 from tqdm import tqdm
@@ -32,15 +34,37 @@ def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
     if len(shapes) > 1:
         vrt_file = os.path.join(out_path,"tmp_vrt.vrt")
         out_file = os.path.join(out_path,"mask_"+time.strftime("%d_%m_%Y_%H%M%S")+".tif")
+        start = time.time()
+        gdal.SetConfigOption("GDAL_CACHEMAX","1024")
+        gdal.SetConfigOption("GDAL_TIFF_OVR_BLOCKSIZE","128")
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK","True")
+
         vrt = gdal.BuildVRT(vrt_file,files)
         vrt = None
-        os.system("gdal_translate -of GTiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES -co COPY_SRC_OVERVIEWS=YES " + vrt_file + " " + out_file)
+        
+        #options = "-of COG -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co BLOCKSIZE="+str(blocksize)
+
+        options = "-of Gtiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES \
+                     -co BLOCKXSIZE="+str(blocksize)+" -co BLOCKYSIZE="+str(blocksize)
+
+        ds = gdal.Translate(out_file,vrt_file,options=options)
+        ds = None
         os.remove(vrt_file)
+        end = time.time()
+        #os.system("gdal_translate -of GTiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES -co COPY_SRC_OVERVIEWS=YES " + vrt_file + " " + out_file)
+        
         for i in files:
             os.remove(i)
-        print("Created Tif file: ",out_file)
+        print(f"Created Tif file in {end-start} seconds: {out_file}")
    
-    
+        # vrt = gdal.BuildVRT(vrt_file,files)
+        # vrt = None
+        # with rasterio.open(vrt_file) as src:
+        #     with WarpedVRT(src,
+        #                 resampling=Resampling.nearest) as vrt:
+        #         out_meta = src.meta.copy()
+        #         out_meta.update({"num_threads":"all_cpus","bigtiff":"yes","compress":compress,"blocksize":blocksize,"tiled":True})
+        #         cog_translate(vrt,out_file,out_meta)
     
 
 
@@ -348,13 +372,13 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
         dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
         #dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
-        net = net.to(rank)
+        net = net.to(device_id)
         net.eval()
         for batch in dl:
             with torch.no_grad():
                 x,idx = batch
                 #x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
-                x = x.float().to(rank,non_blocking=True)
+                x = x.float().to(device_id,non_blocking=True)
                 b_idx = int(idx[0]) - start_idx
                 out = net(x)
                 out = F.softmax(out,dim=1)

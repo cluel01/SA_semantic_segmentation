@@ -21,10 +21,11 @@ from .utils.plotting import plot_predictions
 
 
 def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_path,tensorboard_path=None,scheduler =  None,
-         scheduler_warmup=10,metric="iou",deeplab=False,nimgs=2,seed=42):
+         scheduler_warmup=10,metric="iou",deeplab=False,nimgs=2,figsize=(6,4),seed=42):
     torch.manual_seed(seed)
     
     run_name = os.path.basename(model_path).split(".")[0]
+    print(f"INFO: Start run for {run_name}!")
 
     if tensorboard_path is not None:
         writer = SummaryWriter(os.path.join(tensorboard_path,run_name))
@@ -111,12 +112,12 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                         writer.add_scalar("Learning rate",optimizer.param_groups[0]["lr"],epoch)
                     
                     if (epoch % 5 == 0) or (epochs-1 == epoch ):
-                        fig = plot_predictions(model,x,y,seed=seed,deeplab=deeplab,nimgs=nimgs)
+                        fig = plot_predictions(model,x,y,seed=seed,deeplab=deeplab,nimgs=nimgs,figsize=figsize)
                         writer.add_figure("Segmentation masks/train",fig,epoch)
 
                 if phase == "valid":
                     if (epoch % 5 == 0) or (epochs-1 == epoch ):
-                        fig = plot_predictions(model,x,y,seed=seed,deeplab=deeplab,nimgs=nimgs)
+                        fig = plot_predictions(model,x,y,seed=seed,deeplab=deeplab,nimgs=nimgs,figsize=figsize)
                         writer.add_figure("Segmentation masks/valid",fig,epoch)
 
             if phase == "valid":
@@ -136,123 +137,3 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
     if tensorboard_path is not None:
         writer.close()
     return train_loss, valid_loss    
-
-
-
-
-
-
-
-
-    # fig, axs = plt.subplots(ncols=4,nrows=nimgs, squeeze=False)
-    # fig.patch.set_facecolor('white')
-    # for n_row,i in enumerate(idxs):
-    #     scores = evaluate(out[i].unsqueeze(0),labels[i].unsqueeze(0),reduction=False)
-    #     mask_tens = out[i].cpu().byte()
-    #     img_tens = (inputs[i]*255).cpu().byte()
-    #     true_mask_tens = labels[i].byte()
-    #     seg_mask_tens = draw_segmentation_masks(img_tens,mask_tens.bool(),alpha=0.6)
-    #     tens = {"Img":img_tens,"GT":true_mask_tens,"Pred":mask_tens,"Mask":seg_mask_tens}
-
-    #     for n_col,tup in enumerate(tens.items()):
-    #         k,t = tup
-    #         img = F_vis.to_pil_image(t)
-    #         axs[n_row, n_col].imshow(np.asarray(img))
-    #         axs[n_row, n_col].set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
-    #         axs[n_row, n_col].set_title(k)
-    # return axs
-
-
-
-
-
-
-
-
-# def train_net(net,datasets,
-#               device,save_dir,
-#               epochs: int = 5,
-#               batch_size: int = 1,
-#               learning_rate: float = 1e-5,
-#               save_checkpoint: bool = True,
-#               amp: bool = False,
-#               seed = 42):
-#     torch.manual_seed(seed)
-#     # 1. Create dataset
-#     train_set,val_set = datasets
-#     n_train,n_val = (len(train_set),len(val_set))
-
-#     # 3. Create data loaders
-#     loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=False)
-#     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
-#     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
-
-#     logging.info(f'''Starting training:
-#         Epochs:          {epochs}
-#         Batch size:      {batch_size}
-#         Learning rate:   {learning_rate}
-#         Training size:   {n_train}
-#         Validation size: {n_val}
-#         Checkpoints:     {save_checkpoint}
-#         Device:          {device.type}
-#         Mixed Precision: {amp}
-#     ''')
-
-#     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-#     optimizer = optim.RMSprop(net.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.9)
-#     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=2)  # goal: maximize Dice score
-#     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-#     criterion = nn.CrossEntropyLoss()
-#     global_step = 0
-
-#     # 5. Begin training
-#     for epoch in range(epochs):
-#         net.train()
-#         epoch_loss = 0
-#         with tqdm(total=len(train_set), desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
-#             for batch in train_loader:
-#                 images = batch["x"]
-#                 true_masks = batch["y"]
-
-#                 assert images.shape[1] == net.n_channels, \
-#                     f'Network has been defined with {net.n_channels} input channels, ' \
-#                     f'but loaded images have {images.shape[1]} channels. Please check that ' \
-#                     'the images are loaded correctly.'
-
-#                 images = images.to(device=device, dtype=torch.float32)
-#                 true_masks = true_masks.to(device=device, dtype=torch.long)
-
-#                 with torch.cuda.amp.autocast(enabled=amp):
-#                     masks_pred = net(images)
-#                     loss = criterion(masks_pred, true_masks) \
-#                            + dice_loss(F.softmax(masks_pred, dim=1).float(),
-#                                        F.one_hot(true_masks, net.n_classes).permute(0, 3, 1, 2).float(),
-#                                        multiclass=True)
-
-#                 optimizer.zero_grad(set_to_none=True)
-#                 grad_scaler.scale(loss).backward()
-#                 grad_scaler.step(optimizer)
-#                 grad_scaler.update()
-
-#                 pbar.update(images.shape[0])
-#                 global_step += 1
-#                 epoch_loss += loss.item()
-#                 pbar.set_postfix(**{'loss (batch)': loss.item()})
-
-#                 # Evaluation round
-#                 division_step = (n_train // (10 * batch_size))
-#                 if division_step > 0:
-#                     if global_step % division_step == 0:
-#                         for tag, value in net.named_parameters():
-#                             tag = tag.replace('/', '.')
-
-#                         val_score = evaluate(net, val_loader, device)
-#                         scheduler.step(val_score)
-
-#                         logging.info('Validation Dice score: {}'.format(val_score))
-                        
-
-#         if save_checkpoint:
-#             Path(save_dir).mkdir(parents=True, exist_ok=True)
-#             torch.save(net.state_dict(), str(save_dir + '/checkpoint_epoch{}.pth'.format(epoch + 1)))
-#             logging.info(f'Checkpoint {epoch + 1} saved!')

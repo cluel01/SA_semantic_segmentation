@@ -7,7 +7,7 @@ import numpy as np
 
 from ..evaluate import evaluate
 
-def plot_predictions(net,inputs,labels,nimgs=2,deeplab=False,seed=42):
+def plot_predictions(net,inputs,labels,nimgs=2,figsize=(6,4),deeplab=False,seed=42):
     np.random.seed(seed)
     idxs = np.random.choice(np.arange(len(inputs)),size=nimgs,replace=False)
     
@@ -17,7 +17,7 @@ def plot_predictions(net,inputs,labels,nimgs=2,deeplab=False,seed=42):
     #out = F.softmax(out,dim=1)
     out = torch.argmax(out,dim=1)
 
-    fig = plt.figure(constrained_layout=True)
+    fig = plt.figure(figsize=figsize,constrained_layout=True)
     fig.patch.set_facecolor('white')
     #fig.suptitle('Figure title')
 
