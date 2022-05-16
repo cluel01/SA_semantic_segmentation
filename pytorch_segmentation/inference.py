@@ -264,14 +264,19 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
 
     memfile = create_memfile(shape,compress,blocksize,nodata) #create_files(shapes,out_path,compress,blocksize) #
 
-    in_queue = mp.JoinableQueue(100)
-    out_queue = mp.JoinableQueue(1000)
+    in_queue = mp.JoinableQueue(500)#mp.JoinableQueue(100)
+    out_queue = mp.JoinableQueue(10000)# mp.JoinableQueue(10000)
     #queue = mp.Queue(500)#mp.Queue(500)#mp.JoinableQueue(1000)
     event = mp.Event()
-    context = mp.spawn(run_inference_queue,
-        args=(device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event),
-        nprocs=world_size,
-        join=False)
+    # context = mp.spawn(run_inference_queue,
+    #     args=(device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event),
+    #     nprocs=world_size,
+    #     join=False)
+    processes = []
+    for rank in range(world_size):
+        p = mp.Process(target=run_inference_queue, args=(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event))
+        p.start()     
+        processes.append(p)
 
     consumers = [mp.Process(target=queue_consumer, args=(in_queue,out_queue,shape), daemon=False)
                  for _ in range(world_size)]
@@ -280,7 +285,7 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
          p.start()
 
     complete = True
-    active = list(range(world_size))
+    active = device_ids.copy()
     c = 0
     pid = os.getpid()
     print("Queue PID: ",pid)
@@ -312,38 +317,22 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
     in_queue.close()
     out_queue.close()
     event.set()
-    context.join()
+    #context.join()
+    for p in processes:
+        p.join()
 
     stop_child_pids(pid) # to clean up memory 
     time.sleep(1)
 
     out_file = None
-    # if complete:
-    #     start = time.time()
-    #     out_file = os.path.join(out_path,shape["name"]+".tif")
-    #     out_meta = shape["sat_meta"]
-    #     out_meta.update({"driver":"COG"})
-    #     print(out_meta)
-    #     with rasterio.open(out_file, "w", **out_meta) as dest:
-    #         for _, window in memfile.block_windows():
-    #             r = memfile.read(window=window)
-    #             dest.write(r,window=window)
-    #     memfile.close()
-    #     end = time.time()
-    #     print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
     if complete:
         start = time.time()
         out_meta = shape["sat_meta"]
         out_file = os.path.join(out_path,shape["name"]+".tif")
-        #out_meta.update({"driver":"COG"})
-        #TODO do this without rio-cogeo package
         cog_translate(
             memfile,
             out_file,
             out_meta
-            # in_memory=True,
-            # quiet=True,
-            # allow_intermediate_compression=True
         )
 
 
@@ -369,7 +358,8 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
         start_idx = shape["start_idx"]
         end_idx  = start_idx + np.prod(shape["grid_shape"])
         sampler = DistributedEvalSampler(dataset,start_idx=start_idx,end_idx=end_idx,num_replicas=world_size,rank=rank)
-        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
+        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context,persistent_workers=False)
+        #dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context,persistent_workers=True)
         #dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
         net = net.to(device_id)
@@ -385,11 +375,11 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
                 out = torch.argmax(out,dim=1)
                 out = out.byte().cpu()
                 queue.put([b_idx,out])
-        queue.put([rank,"DONE"])
+        queue.put([device_id,"DONE"])
         event.wait()
     except Exception as e:
         print(f"Error: GPU {device_id} - {e}")
-        queue.put([rank,"ERROR"])
+        queue.put([device_id,"ERROR"])
         event.wait()
 
 def queue_consumer(in_queue,out_queue,shape):
