@@ -34,15 +34,15 @@ class InMemorySatDataset(Dataset):
 
                 assert len(patches_masks) == len(patches_data)
 
-                X = np.array(patches_data)
-                y = np.array(patches_masks)
+                X = np.stack(patches_data)
+                y = np.stack(patches_masks)
 
-                X = torch.as_tensor(X).float().contiguous()
+                X = torch.from_numpy(X).float().contiguous()
+                y = torch.from_numpy(y).long().contiguous()
+
                 self.X = X / 255
-                self.y = torch.as_tensor(y).long().contiguous()
+                self.y = y
                 
-                del X
-                del y
                 for i in mask_areas:
                     i.close()
                 satellite_img.close()
@@ -101,10 +101,10 @@ class InMemorySatDataset(Dataset):
         if train_transform is None:
             train_transform = self.transform
         
-        X_train, X_test, y_train, y_test,indices_train,indices_test = train_test_split(self.X.numpy(), self.y.numpy(),self.indices, test_size=test_size, random_state=seed)
-        train_set = InMemorySatDataset(X=X_train,y=y_train,data_file_path=self.data_file_path,mask_path=self.mask_path,transform=self.transform,patch_size=self.patch_size,overlap=self.overlap,
+        indices_train,indices_test = train_test_split(self.indices, test_size=test_size, random_state=seed)
+        train_set = InMemorySatDataset(X=self.X[indices_train],y=self.y[indices_train],data_file_path=self.data_file_path,mask_path=self.mask_path,transform=train_transform,patch_size=self.patch_size,overlap=self.overlap,
                                         padding=self.padding,pad_value=self.pad_value,indices=indices_train)
-        test_set = InMemorySatDataset(X=X_test,y=y_test,data_file_path=self.data_file_path,mask_path=self.mask_path,transform=test_transform,patch_size=self.patch_size,overlap=self.overlap,
+        test_set = InMemorySatDataset(X=self.X[indices_test],y=self.y[indices_test],data_file_path=self.data_file_path,mask_path=self.mask_path,transform=test_transform,patch_size=self.patch_size,overlap=self.overlap,
                                         padding=self.padding,pad_value=self.pad_value,indices=indices_test)
 
         return train_set,test_set
@@ -133,8 +133,12 @@ class InMemorySatDataset(Dataset):
         for ma in mask_areas:
             # get coordinates 
             geom = geometry.box(*ma.bounds)
+
             satellite_area_arr, sat_patch_arr_transform = rasterio.mask.mask(satellite_img,[geom]
                                                                         , crop=True)
+            if satellite_area_arr.shape[1:] != ma.shape: #in case we have pixel inaccuracies and the cropped version has cropped one pixel more than the mask
+                satellite_area_arr = satellite_area_arr[:,:ma.shape[0],:ma.shape[1]]
+
             #bounds =  la.bounds
             #satellite_area_arr = satellite_img.read(None, window = from_bounds(*bounds, satellite_img.transform))
             if self.padding: 

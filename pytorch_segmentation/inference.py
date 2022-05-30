@@ -1,5 +1,6 @@
 #from rio_cogeo.cogeo import cog_translate
 import psutil
+from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -25,11 +26,19 @@ def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
                     num_workers=4,pin_memory=True,compress="deflate",blocksize=512):
     files = []
     print("Total number of shapes: ",len(shapes))
+
+    if not os.path.isdir(out_path):
+        Path(out_path).mkdir(parents=True, exist_ok=True)
+
     for idx,s in shapes.iterrows():
         print("Shape: ",idx)
         ofile = mosaic_to_raster_mp_queue_memory_multi(dataset_path,s,idx,net,out_path,device_ids,bs,
                         num_workers,pin_memory,compress,blocksize)
-        files.append(ofile)
+
+        if ofile is not None:
+            files.append(ofile)
+        else:
+            print("Error for ",idx)
     
     if len(shapes) > 1:
         vrt_file = os.path.join(out_path,"tmp_vrt.vrt")
@@ -38,7 +47,7 @@ def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
         gdal.SetConfigOption("GDAL_CACHEMAX","1024")
         gdal.SetConfigOption("GDAL_TIFF_OVR_BLOCKSIZE","128")
         gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK","True")
-
+        
         vrt = gdal.BuildVRT(vrt_file,files)
         vrt = None
         

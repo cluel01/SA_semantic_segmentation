@@ -130,6 +130,7 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                 if epoch_score[metric] > best_valid_score:
                     best_valid_score = epoch_score[metric]
                     best_model_wghts = model.state_dict().copy()
+                    torch.save(model.state_dict(), model_path)
                     early_stopping_counter = 0
                 else:
                     early_stopping_counter += 1
@@ -141,7 +142,7 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
     time_elapsed = time.time() - start
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))    
     model.load_state_dict(best_model_wghts)
-    torch.save(model.state_dict(), model_path)
+    #torch.save(model.state_dict(), model_path)
     
     if tensorboard_path is not None:
         writer.close()

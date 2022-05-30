@@ -104,15 +104,25 @@ class RwandaDataset(Dataset):
             sample = self.transform(image,mask)
             _,mask = sample
         plt.imshow(  mask.numpy()  )
+    
+    def show_tuple(self,idx):
+        image = self.X[idx]
+        mask = self.y[idx]
+        if self.transform:
+            sample = self.transform(image,mask)
+            image,mask = sample
+        fig, axs = plt.subplots(1,2)
+        axs[0].imshow(image.permute(1, 2, 0).numpy()  )
+        axs[1].imshow(  mask.numpy())
 
     def get_train_test_set(self,test_size,train_transform=None,test_transform=None,seed=42):
         if train_transform is None:
             train_transform = self.transform
         
-        X_train, X_test, y_train, y_test,indices_train,indices_test = train_test_split(self.X.numpy(), self.y.numpy(),self.indices, test_size=test_size, random_state=seed)
-        train_set = RwandaDataset(X=X_train,y=y_train,data_file_path=self.data_file_path,shape_path=self.shape_path,transform=self.transform,patch_size=self.patch_size,overlap=self.overlap,
+        indices_train,indices_test = train_test_split(self.indices, test_size=test_size, random_state=seed)
+        train_set = RwandaDataset(X=self.X[indices_train],y=self.y[indices_train],data_file_path=self.data_file_path,shape_path=self.shape_path,transform=train_transform,patch_size=self.patch_size,overlap=self.overlap,
                                         padding=self.padding,pad_value=self.pad_value,indices=indices_train)
-        test_set = RwandaDataset(X=X_test,y=y_test,data_file_path=self.data_file_path,shape_path=self.shape_path,transform=test_transform,patch_size=self.patch_size,overlap=self.overlap,
+        test_set = RwandaDataset(X=self.X[indices_test],y=self.y[indices_test],data_file_path=self.data_file_path,shape_path=self.shape_path,transform=test_transform,patch_size=self.patch_size,overlap=self.overlap,
                                         padding=self.padding,pad_value=self.pad_value,indices=indices_test)
         
         return train_set,test_set
