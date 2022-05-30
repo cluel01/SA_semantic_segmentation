@@ -20,4 +20,4 @@ ml load PyTorch/1.9.0
 #ml load OpenCV
 
 # run the application
-python /home/c/c_luel01/satellite_data/SA_semantic_segmentation/jobs/run_inference.py $AREA $YEAR $N_GPU
+python /home/c/c_luel01/satellite_data/SA_semantic_segmentation/jobs/run_inference.py $AREA $YEAR $N_GPU $GPU
