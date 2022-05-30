@@ -124,8 +124,6 @@ class RwandaDataset(Dataset):
             with rasterio.open(f) as src_sat:
                 b_left,b_bottom,b_right,b_top = src_sat.bounds
                 shape_df_filter = shape_df.cx[b_left:b_right,b_bottom:b_top]
-                if len(shape_df_filter) == 0:
-                     continue
 
                 satellite_area_arr = src_sat.read()
                 
@@ -146,7 +144,10 @@ class RwandaDataset(Dataset):
                                                 # = (#patches, 3, 256, 256)
                 patches_satellite.extend(reshaped_patches)
 
-                mask_arr,_,_ = raster_geometry_mask(src_sat,shape_df_filter,invert=True)
+                if len(shape_df_filter) > 0:
+                    mask_arr,_,_ = raster_geometry_mask(src_sat,shape_df_filter,invert=True)
+                else:
+                    mask_arr = np.zeros(satellite_area_arr.shape[1:],dtype="uint8")
                 pm = self._create_mask_patches(mask_arr)
                 patches_mask.extend(pm)
         return patches_satellite,patches_mask

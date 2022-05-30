@@ -89,6 +89,24 @@ class TverskyLoss(nn.Module):
         return torch.mean(1. - tversky_loss)
 
 
+class FocalTverskyLoss(nn.Module):
+    def __init__(self, alpha: float, beta: float, gamma: float) -> None:
+        super(FocalTverskyLoss, self).__init__()
+        self.alpha: float = alpha
+        self.beta: float = beta
+        self.gamma = gamma
+        self.eps: float = 1e-6
+        self.tv = TverskyLoss(alpha,beta)
+
+
+    def forward(
+            self,
+            input: torch.Tensor,
+            target: torch.Tensor) -> torch.Tensor:
+        tv = self.tv(input,target)
+        #return torch.pow((1-tv),self.gamma)
+        return torch.pow(tv,self.gamma)
+
 
 ######################
 # functional interface

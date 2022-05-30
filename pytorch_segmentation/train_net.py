@@ -21,7 +21,7 @@ from .utils.plotting import plot_predictions
 
 
 def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_path,tensorboard_path=None,scheduler =  None,
-         scheduler_warmup=10,metric="iou",deeplab=False,nimgs=2,figsize=(6,4),seed=42):
+         scheduler_warmup=10,early_stopping = None,metric="iou",deeplab=False,nimgs=2,figsize=(6,4),seed=42):
     torch.manual_seed(seed)
     
     run_name = os.path.basename(model_path).split(".")[0]
@@ -36,12 +36,18 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
     train_loss, valid_loss = [], []
 
     best_valid_score = -np.inf
+    early_stopping_counter = 0
     #best_valid_loss = np.inf
     best_model_wghts = None
     
     for epoch in range(epochs):
         print('Epoch {}/{}'.format(epoch, epochs - 1))
         print('-' * 10)
+
+        if early_stopping is not None:
+            if early_stopping == early_stopping_counter:
+                print(f"INFO: Early stopping after {epoch} epochs")
+                break
 
         for phase in ['train', 'valid']:
             if phase == 'train':
@@ -89,9 +95,9 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                 # stats - whatever is the phase
                 with torch.no_grad():
                     score = evaluate(outputs, y)
-                
-                running_score  += score*dataloader.batch_size
-                running_loss += loss*dataloader.batch_size 
+
+                running_score  += score*len(x)
+                running_loss += loss*len(x) 
 
             epoch_loss = running_loss / len(dataloader.dataset)
             epoch_score = (running_score / len(dataloader.dataset)).iloc[0].to_dict()
@@ -124,6 +130,9 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                 if epoch_score[metric] > best_valid_score:
                     best_valid_score = epoch_score[metric]
                     best_model_wghts = model.state_dict().copy()
+                    early_stopping_counter = 0
+                else:
+                    early_stopping_counter += 1
             else:
                 if scheduler:
                     if epoch >= scheduler_warmup:
