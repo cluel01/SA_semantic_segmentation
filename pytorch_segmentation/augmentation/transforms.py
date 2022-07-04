@@ -132,3 +132,34 @@ class RandomRotation:
         image = F.rotate(image,angle=angle,fill=self.fill)
         target = F.rotate(target.unsqueeze(0),angle=angle,fill=self.fill)
         return image,target.squeeze()
+
+
+class RandomPixel:
+    def __init__(self, pixel_value=0,ratio=0.01,random_apply=1.,seed=42):
+        np.random.seed(seed)
+        self.pixel_value = pixel_value
+        self.ratio = ratio
+        self.seed = seed
+        self.random_apply = random_apply
+
+    def __call__(self, image, target):
+
+        if np.random.rand() < self.random_apply:
+            if (len(image.shape) == 2):
+                shape = image.shape 
+                dim = 2
+            else:
+                shape = image.shape[1:]
+                dim = 3
+                if type(self.pixel_value) == int:
+                    pixel_value = [self.pixel_value] * image.shape[0]
+                else:
+                    assert len(self.pixel_value) == image.shape[0]
+                    pixel_value = self.pixel_value
+            mask = np.random.rand(*shape) < self.ratio
+            if dim == 2:
+                image[mask] = self.pixel_value
+            else:
+                for i in range(image.shape[0]):
+                    image[i,mask] = pixel_value[i]
+        return image, target

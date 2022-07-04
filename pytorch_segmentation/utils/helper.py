@@ -5,22 +5,32 @@ from shapely.ops import transform
 from shapely import geometry
 import fiona
 import rasterio
+from rasterio.mask import mask
 import numpy as np
 import math
+import os
 
 def raster_bounds_to_shape(raster_path,shape_path,crs="EPSG:4326"):
-    ra = rasterio.open(raster_path)
-    bounds  = ra.bounds
 
-    old_crs = pyproj.CRS(ra.crs)
-    new_crs = pyproj.CRS(crs)
+    shapes = []
+    if os.path.isfile(raster_path):
+        raster_files = [raster_path]
+    else:
+        raster_files = [os.path.join(raster_path,i) for i in os.listdir(raster_path) if i.endswith(".tif")]
+    for n,r in enumerate(raster_files):
+        ra = rasterio.open(r)
+        bounds  = ra.bounds
 
-    geom = box(*bounds)
-    if old_crs != new_crs:
-        project = pyproj.Transformer.from_crs(ra.crs, new_crs, always_xy=True).transform
-        geom = transform(project, geom)
+        old_crs = pyproj.CRS(ra.crs)
+        new_crs = pyproj.CRS(crs)
 
-    df = gpd.GeoDataFrame({"id":1,"geometry":[geom]},crs=new_crs)
+        geom = box(*bounds)
+        if old_crs != new_crs:
+            project = pyproj.Transformer.from_crs(ra.crs, new_crs, always_xy=True).transform
+            geom = transform(project, geom)
+        shapes.append(geom)
+
+    df = gpd.GeoDataFrame(geometry=shapes,crs=new_crs)
     df.to_file(shape_path)
 
 def shapes_intersecting_with_raster(shape_path,raster_file):
@@ -33,7 +43,7 @@ def shapes_intersecting_with_raster(shape_path,raster_file):
             for i,shp in enumerate(shapes):
                 s = geometry.shape(shp["geometry"])
                 if sat_shape.intersects(s):
-                    out_image, _ = rasterio.mask.mask(src, [s], crop=True)
+                    out_image, _ = mask(src, [s], crop=True)
                     if not np.all(out_image == nodata):
                         shape_idxs.append(i)
     return shape_idxs

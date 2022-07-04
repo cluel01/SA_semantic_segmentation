@@ -7,12 +7,14 @@ import numpy as np
 from shapely import geometry
 import fiona
 import pickle
+import matplotlib.pyplot as plt
 import pandas as pd
 
+import cv2
 
 ## SatInferenceDataset for containing satellite imagery areas based on given shapes -> only returning X without mask
 class SatInferenceDataset(Dataset):
-    def __init__(self,dataset_path=None,data_file_path=None,shape_file=None,shape_idx=None,transform=None,patch_size=[256,256,3],overlap=128,padding=64,nodata=255):
+    def __init__(self,dataset_path=None,data_file_path=None,shape_file=None,shape_idx=None,transform=None,patch_size=[256,256,3],overlap=128,padding=64,nodata=0):
         if dataset_path is None:
             if data_file_path is not None:
                 self.transform = transform
@@ -23,8 +25,7 @@ class SatInferenceDataset(Dataset):
                 self.t_patch_size = self.patch_size[[2,0,1]]  # patch_size for Tensors 
                 self.overlap = overlap
                 self.padding = padding
-                if nodata == 0:
-                    print("WARNING: nodata values might cause problems for the edge patches! nodata value of 255 is recommended")
+
                 self.nodata = nodata
                 self.data_file_path = data_file_path
                 self.shape_file = shape_file
@@ -64,13 +65,14 @@ class SatInferenceDataset(Dataset):
                 raise ValueError("Missing dataset_path or data_file_path!")
         else:
             self.load(dataset_path)
+            self.transform = transform
         
 
     def __getitem__(self, index):
         patch = self.patches[index]
         with rasterio.open(self.data_file_path) as src_sat:
             win = Window(*patch)
-            img = src_sat.read(window=win,boundless=True,fill_value=self.nodata) #dont use 0 as this gets to be transformed into 255
+            img = src_sat.read(window=win,boundless=True,fill_value=self.nodata)
             if not np.all(img == self.nodata):
                 img,padding = self._crop_nodata(img,self.nodata)
                 #elif tuple(img.shape) != tuple(self.t_patch_siez):
@@ -78,10 +80,25 @@ class SatInferenceDataset(Dataset):
                     top,bottom,left,right = padding
                     img = np.pad(img,[(0,0),(top,bottom),(left,right)],"edge")
                     #img = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=self.pad_value)
+        
+        # ######
+        # img = cv2.cvtColor(img.transpose(2,1,0), cv2.COLOR_RGB2LAB)
+        # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        # img[:,:,0] = clahe.apply(img[:,:,0])
+
+        # # Converting image from LAB Color model to BGR color space
+        # img = cv2.cvtColor(img, cv2.COLOR_LAB2RGB)
+        
+        # img = img.transpose(2,1,0)
+        # ######
+        
         img = torch.from_numpy(img).float().contiguous()
+
         img = img / 255
+
         if self.transform:
             img = self.transform(img)
+
         return img,index
     
     def __len__(self):
@@ -104,6 +121,27 @@ class SatInferenceDataset(Dataset):
         self.patches,self.shapes,cfg  = obj
         for k in cfg.keys():
             setattr(self,k,cfg[k])
+
+    def get_img(self,index):
+        patch = self.patches[index]
+        with rasterio.open(self.data_file_path) as src_sat:
+            win = Window(*patch)
+            img = src_sat.read(window=win,boundless=True,fill_value=self.nodata)
+            if not np.all(img == self.nodata):
+                img,padding = self._crop_nodata(img,self.nodata)
+                #elif tuple(img.shape) != tuple(self.t_patch_siez):
+                if np.sum(padding) > 0:
+                    top,bottom,left,right = padding
+                    img = np.pad(img,[(0,0),(top,bottom),(left,right)],"edge")
+                    #img = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=self.pad_value)
+        img = torch.from_numpy(img).float().contiguous()
+
+        img = img / 255
+
+        if self.transform:
+            img = self.transform(img)
+
+        plt.imshow(img.permute(1, 2, 0)  )
 
     @staticmethod
     #For speedup purposes it is only checked one band

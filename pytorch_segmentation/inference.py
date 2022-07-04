@@ -23,7 +23,7 @@ import signal
 
 #Wrapper function that can call all different versions
 def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
-                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512):
+                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0,transform=None):
     files = []
     print("Total number of shapes: ",len(shapes))
 
@@ -33,7 +33,7 @@ def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
     for idx,s in shapes.iterrows():
         print("Shape: ",idx)
         ofile = mosaic_to_raster_mp_queue_memory_multi(dataset_path,s,idx,net,out_path,device_ids,bs,
-                        num_workers,pin_memory,compress,blocksize)
+                        num_workers,pin_memory,compress,blocksize,nodata,transform)
 
         if ofile is not None:
             files.append(ofile)
@@ -251,7 +251,7 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shape,shape_idx,net,out_path,d
         print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
 
 def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_path,device_ids,bs=16,
-                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0):
+                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0,transform=None):
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
@@ -268,6 +268,9 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
     elif type(device_ids) == int:
         device_ids = [device_ids]
         world_size = 1
+    elif (device_ids is None) or device_ids == "cpu":
+        device_ids = [torch.device("cpu")]
+        world_size = 1
 
     n = int(np.prod(shape["grid_shape"]))
 
@@ -283,7 +286,7 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
     #     join=False)
     processes = []
     for rank in range(world_size):
-        p = mp.Process(target=run_inference_queue, args=(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event))
+        p = mp.Process(target=run_inference_queue, args=(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event,transform))
         p.start()     
         processes.append(p)
 
@@ -351,7 +354,7 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
     return out_file
 
 
-def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,queue,event):
+def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,queue,event,transform):
     try:
         mp_context = "fork"
         #torch.set_num_threads(1) #prevent memory leakage
@@ -359,10 +362,14 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
             mp_context = None
 
         device_id = device_ids[rank]
-        print("Start GPU:",device_id)
-        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
-        torch.cuda.set_device(device_id)
-        dataset =  SatInferenceDataset(dataset_path=dataset_path)
+        if device_id != torch.device("cpu"):
+            print("Start GPU:",device_id)
+            os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
+            torch.cuda.set_device(device_id)
+        else:
+            print("Start on CPU!")
+            pin_memory = False
+        dataset =  SatInferenceDataset(dataset_path=dataset_path,transform=transform)
         shape = dataset.shapes.iloc[shape_idx]
         start_idx = shape["start_idx"]
         end_idx  = start_idx + np.prod(shape["grid_shape"])
@@ -387,7 +394,7 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
         queue.put([device_id,"DONE"])
         event.wait()
     except Exception as e:
-        print(f"Error: GPU {device_id} - {e}")
+        print(f"Error: Job {device_id} - {e}")
         queue.put([device_id,"ERROR"])
         event.wait()
 

@@ -21,26 +21,32 @@ class InMemorySatDataset(Dataset):
         self.mask_path = mask_path
 
         if (X is not None) and (y is not None):
-            self.X = torch.as_tensor(X).float().contiguous()
-            self.y = torch.as_tensor(y).long().contiguous()
+            self.X = np.array(X,dtype="uint8")
+            self.y = np.array(y,dtype="uint8")
         else:
             if (data_file_path is not None) and (mask_path is not None):
-                mask_areas = [rasterio.open(os.path.join(mask_path,i)) for i in os.listdir(mask_path) if i.endswith(file_extension)]
                 satellite_img = rasterio.open(data_file_path)
 
+                mask_areas = []
+                for i in os.listdir(mask_path):
+                    if i.endswith(file_extension):
+                        m = rasterio.open(os.path.join(mask_path,i))
+                        if (m.shape[0] < self.patch_size[0]) or (m.shape[1] < self.patch_size[1]):
+                            print(f"Shape {i} is too small for patch size with size: {m.shape}")
+                        else:
+                            mask_areas.append(m)
+
+                assert len(mask_areas) > 0
 
                 patches_masks = self._create_mask_patches(mask_areas)
                 patches_data = self._create_data_patches(satellite_img,mask_areas)
 
                 assert len(patches_masks) == len(patches_data)
 
-                X = np.stack(patches_data)
-                y = np.stack(patches_masks)
+                X = np.stack(patches_data).astype("uint8")
+                y = np.stack(patches_masks).astype("uint8")
 
-                X = torch.from_numpy(X).float().contiguous()
-                y = torch.from_numpy(y).long().contiguous()
-
-                self.X = X / 255
+                self.X = X 
                 self.y = y
                 
                 for i in mask_areas:
@@ -59,10 +65,11 @@ class InMemorySatDataset(Dataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        image = self.X[idx]
-        mask = self.y[idx]
+        image = torch.from_numpy(self.X[idx]).float()
+        mask = torch.from_numpy(self.y[idx]).long()
 
-            
+        image = image / 255
+
         if self.transform:
             sample = self.transform(image=image,target=mask)
             image,mask = sample
@@ -70,24 +77,33 @@ class InMemorySatDataset(Dataset):
         return {"x":image, "y":mask}
 
     def get_img(self,idx):
-        image = self.X[idx]
-        mask = self.y[idx]
+        image = torch.from_numpy(self.X[idx]).float()
+        mask =torch.from_numpy( self.y[idx]).long()
+
+        image = image / 255
+
         if self.transform:
             sample = self.transform(image,mask)
             image,_ = sample
         plt.imshow(image.permute(1, 2, 0).numpy()  )
 
     def get_mask(self,idx):
-        image = self.X[idx]
-        mask = self.y[idx]
+        image = torch.from_numpy(self.X[idx]).float()
+        mask = torch.from_numpy(self.y[idx]).long()
+
+        image = image / 255
+
         if self.transform:
             sample = self.transform(image,mask)
             _,mask = sample
         plt.imshow(  mask.numpy())
 
     def show_tuple(self,idx):
-        image = self.X[idx]
-        mask = self.y[idx]
+        image = torch.from_numpy(self.X[idx]).float()
+        mask = torch.from_numpy(self.y[idx]).long()
+
+        image = image / 255
+        
         if self.transform:
             sample = self.transform(image,mask)
             image,mask = sample
