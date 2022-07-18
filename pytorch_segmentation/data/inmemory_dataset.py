@@ -76,37 +76,46 @@ class InMemorySatDataset(Dataset):
 
         return {"x":image, "y":mask}
 
-    def get_img(self,idx):
+    def get_img(self,idx,transform=True):
         image = torch.from_numpy(self.X[idx]).float()
         mask =torch.from_numpy( self.y[idx]).long()
 
         image = image / 255
 
-        if self.transform:
+        if (self.transform) and (transform):
             sample = self.transform(image,mask)
             image,_ = sample
+
+        if image.size(0) > 3:
+            image = image[:3,:,:]
+
         plt.imshow(image.permute(1, 2, 0).numpy()  )
 
-    def get_mask(self,idx):
+    def get_mask(self,idx,transform=True):
         image = torch.from_numpy(self.X[idx]).float()
         mask = torch.from_numpy(self.y[idx]).long()
 
         image = image / 255
 
-        if self.transform:
+        if (self.transform) and (transform):
             sample = self.transform(image,mask)
             _,mask = sample
         plt.imshow(  mask.numpy())
 
-    def show_tuple(self,idx):
+    def show_tuple(self,idx,transform=True):
         image = torch.from_numpy(self.X[idx]).float()
         mask = torch.from_numpy(self.y[idx]).long()
 
         image = image / 255
         
-        if self.transform:
+        if (self.transform) and (transform):
             sample = self.transform(image,mask)
             image,mask = sample
+
+        if image.size(0) > 3:
+            image = image[:3,:,:]
+
+
         fig, axs = plt.subplots(1,2)
         axs[0].imshow(image.permute(1, 2, 0).numpy()  )
         axs[1].imshow(  mask.numpy())

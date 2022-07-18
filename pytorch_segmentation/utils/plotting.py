@@ -20,7 +20,6 @@ def plot_predictions(net,inputs,labels,nimgs=2,figsize=(6,4),deeplab=False,seed=
         #out = F.softmax(out,dim=1)
         out = torch.argmax(out,dim=1)
         
-
     fig = plt.figure(figsize=figsize,constrained_layout=True)
     fig.patch.set_facecolor('white')
     #fig.suptitle('Figure title')
@@ -29,7 +28,10 @@ def plot_predictions(net,inputs,labels,nimgs=2,figsize=(6,4),deeplab=False,seed=
     for n_row, subfig in enumerate(subfigs):
         i = idxs[n_row]
         mask_tens = out[i].byte()
-        img_tens = (inputs[i]*255).cpu().byte()
+        if inputs.size(0) > 3:
+            img_tens = (inputs[i]*255).cpu().byte()[:3,:,:]
+        else:
+            img_tens = (inputs[i]*255).cpu().byte()
         true_mask_tens = labels[i].cpu().byte()
         seg_mask_tens = draw_segmentation_masks(img_tens,mask_tens.bool(),alpha=0.6)
         tens = [("Img",img_tens),("Mask",seg_mask_tens),("GT",true_mask_tens),("Pred",mask_tens)]

@@ -147,3 +147,6 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
     if tensorboard_path is not None:
         writer.close()
     return train_loss, valid_loss    
+
+
+

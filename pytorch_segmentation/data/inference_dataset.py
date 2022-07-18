@@ -14,7 +14,8 @@ import cv2
 
 ## SatInferenceDataset for containing satellite imagery areas based on given shapes -> only returning X without mask
 class SatInferenceDataset(Dataset):
-    def __init__(self,dataset_path=None,data_file_path=None,shape_file=None,shape_idx=None,transform=None,patch_size=[256,256,3],overlap=128,padding=64,nodata=0):
+    def __init__(self,dataset_path=None,data_file_path=None,shape_file=None,shape_idx=None,transform=None,
+                patch_size=[256,256,3],overlap=128,padding=64,nodata=0,pad_mode="reflect"):
         if dataset_path is None:
             if data_file_path is not None:
                 self.transform = transform
@@ -25,6 +26,7 @@ class SatInferenceDataset(Dataset):
                 self.t_patch_size = self.patch_size[[2,0,1]]  # patch_size for Tensors 
                 self.overlap = overlap
                 self.padding = padding
+                self.pad_mode = pad_mode
 
                 self.nodata = nodata
                 self.data_file_path = data_file_path
@@ -72,32 +74,26 @@ class SatInferenceDataset(Dataset):
         patch = self.patches[index]
         with rasterio.open(self.data_file_path) as src_sat:
             win = Window(*patch)
-            img = src_sat.read(window=win,boundless=True,fill_value=self.nodata)
+            if self.nodata == 0: #TODO Bug with Rwanda dataset which is not filling with 0 if nodata == 0
+                nodata = -1
+            else:
+                nodata = self.nodata
+            img = src_sat.read(window=win,boundless=True,fill_value=nodata)
+
             if not np.all(img == self.nodata):
                 img,padding = self._crop_nodata(img,self.nodata)
                 #elif tuple(img.shape) != tuple(self.t_patch_siez):
                 if np.sum(padding) > 0:
                     top,bottom,left,right = padding
-                    img = np.pad(img,[(0,0),(top,bottom),(left,right)],"edge")
+                    img = np.pad(img,[(0,0),(top,bottom),(left,right)],self.pad_mode)
                     #img = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=self.pad_value)
-        
-        # ######
-        # img = cv2.cvtColor(img.transpose(2,1,0), cv2.COLOR_RGB2LAB)
-        # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        # img[:,:,0] = clahe.apply(img[:,:,0])
-
-        # # Converting image from LAB Color model to BGR color space
-        # img = cv2.cvtColor(img, cv2.COLOR_LAB2RGB)
-        
-        # img = img.transpose(2,1,0)
-        # ######
-        
         img = torch.from_numpy(img).float().contiguous()
 
         img = img / 255
 
         if self.transform:
-            img = self.transform(img)
+            sample = self.transform(image=img,target=None)
+            img,_=  sample
 
         return img,index
     
@@ -122,24 +118,32 @@ class SatInferenceDataset(Dataset):
         for k in cfg.keys():
             setattr(self,k,cfg[k])
 
-    def get_img(self,index):
+    def get_img(self,index,transform=True):
         patch = self.patches[index]
         with rasterio.open(self.data_file_path) as src_sat:
             win = Window(*patch)
-            img = src_sat.read(window=win,boundless=True,fill_value=self.nodata)
+            if self.nodata == 0: #TODO Bug with Rwanda dataset which is not filling with 0 if nodata == 0
+                nodata = -1
+            else:
+                nodata = self.nodata
+            img = src_sat.read(window=win,boundless=True,fill_value=nodata)
             if not np.all(img == self.nodata):
                 img,padding = self._crop_nodata(img,self.nodata)
                 #elif tuple(img.shape) != tuple(self.t_patch_siez):
                 if np.sum(padding) > 0:
                     top,bottom,left,right = padding
-                    img = np.pad(img,[(0,0),(top,bottom),(left,right)],"edge")
+                    img = np.pad(img,[(0,0),(top,bottom),(left,right)],self.pad_mode)
                     #img = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=self.pad_value)
         img = torch.from_numpy(img).float().contiguous()
 
         img = img / 255
 
-        if self.transform:
-            img = self.transform(img)
+        if (self.transform) and (transform):
+            sample = self.transform(image=img,target=None)
+            img,_=  sample
+
+        if img.size(0) > 3:
+            img = img[:3,:,:]
 
         plt.imshow(img.permute(1, 2, 0)  )
 
