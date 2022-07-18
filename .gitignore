@@ -2,6 +2,7 @@
 .vscode
 *.tif
 *.pkl
+*.tar
 
 runs/
 saved_models/*.csv
