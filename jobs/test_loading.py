@@ -38,7 +38,7 @@ dataset = SatInferenceDataset(data_file_path=d_path,shape_file=s_path,overlap=ov
 shapes = dataset.shapes.copy()
 dataset.save(tmp_d_path)
 
-queue = mp.JoinableQueue(20)
+queue = mp.JoinableQueue(30)
 
 dl =  DataLoader(dataset,batch_size=bs,num_workers = nworkers,pin_memory=True,multiprocessing_context="fork")
 
