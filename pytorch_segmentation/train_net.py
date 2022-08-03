@@ -13,8 +13,9 @@ import numpy as np
 import pandas as pd
 import os 
 
-from sklearn.metrics import f1_score,accuracy_score
 from torch.utils.tensorboard import SummaryWriter
+
+from pytorch_segmentation.losses.dice import DiceLoss,dice_loss
 
 from .evaluate import evaluate
 from .utils.plotting import plot_predictions
@@ -78,7 +79,7 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                     if deeplab:
                         outputs = outputs["out"]
 
-                    loss = loss_fn(outputs, y)
+                    loss = loss_fn(outputs, y) #+ dice_loss(outputs,y)
 
                     # the backward pass frees the graph memory, so there is no 
                     # need for torch.no_grad in this training pass
@@ -90,14 +91,15 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                         outputs = model(x)
                         if deeplab:
                             outputs = outputs["out"]
-                        loss = loss_fn(outputs, y.long())
+                        loss = loss_fn(outputs, y) #+ dice_loss(outputs,y)
 
                 # stats - whatever is the phase
                 with torch.no_grad():
-                    score = evaluate(outputs, y)
+                    #score = evaluate(outputs.cpu(), y.cpu())
+                    score = evaluate(outputs, y) #on GPU
 
                 running_score  += score*len(x)
-                running_loss += loss*len(x) 
+                running_loss += loss.item()*len(x) 
 
             epoch_loss = running_loss / len(dataloader.dataset)
             epoch_score = (running_score / len(dataloader.dataset)).iloc[0].to_dict()
@@ -112,10 +114,7 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                     writer.add_scalar(k+"/"+phase,v,epoch)
 
                 if phase == "train":
-                    if scheduler is not None:
-                        writer.add_scalar("Learning rate",scheduler.get_last_lr()[0],epoch)
-                    else:
-                        writer.add_scalar("Learning rate",optimizer.param_groups[0]["lr"],epoch)
+                    writer.add_scalar("Learning rate",optimizer.param_groups[0]["lr"],epoch)
                     
                     if (epoch % 5 == 0) or (epochs-1 == epoch ):
                         fig = plot_predictions(model,x,y,seed=seed,deeplab=deeplab,nimgs=nimgs,figsize=figsize)
@@ -134,10 +133,11 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                     early_stopping_counter = 0
                 else:
                     early_stopping_counter += 1
-            else:
+                
                 if scheduler:
                     if epoch >= scheduler_warmup:
-                        scheduler.step()
+                        scheduler.step()#(epoch_score[metric])
+                
 
     time_elapsed = time.time() - start
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))    
@@ -147,3 +147,6 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
     if tensorboard_path is not None:
         writer.close()
     return train_loss, valid_loss    
+
+
+

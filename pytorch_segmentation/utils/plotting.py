@@ -11,12 +11,15 @@ def plot_predictions(net,inputs,labels,nimgs=2,figsize=(6,4),deeplab=False,seed=
     np.random.seed(seed)
     idxs = np.random.choice(np.arange(len(inputs)),size=nimgs,replace=False)
     
-    out = net(inputs)
-    if deeplab:
-        out = out["out"]
-    #out = F.softmax(out,dim=1)
-    out = torch.argmax(out,dim=1)
-
+    with torch.no_grad():
+        net.eval()
+        out = net(inputs)
+        if deeplab:
+            out = out["out"]
+        out = out.cpu()
+        #out = F.softmax(out,dim=1)
+        out = torch.argmax(out,dim=1)
+        
     fig = plt.figure(figsize=figsize,constrained_layout=True)
     fig.patch.set_facecolor('white')
     #fig.suptitle('Figure title')
@@ -24,13 +27,16 @@ def plot_predictions(net,inputs,labels,nimgs=2,figsize=(6,4),deeplab=False,seed=
     subfigs = fig.subfigures(nrows=nimgs, ncols=1)
     for n_row, subfig in enumerate(subfigs):
         i = idxs[n_row]
-        mask_tens = out[i].cpu().byte()
-        img_tens = (inputs[i]*255).cpu().byte()
-        true_mask_tens = labels[i].byte()
+        mask_tens = out[i].byte()
+        if inputs.size(0) > 3:
+            img_tens = (inputs[i]*255).cpu().byte()[:3,:,:]
+        else:
+            img_tens = (inputs[i]*255).cpu().byte()
+        true_mask_tens = labels[i].cpu().byte()
         seg_mask_tens = draw_segmentation_masks(img_tens,mask_tens.bool(),alpha=0.6)
         tens = [("Img",img_tens),("Mask",seg_mask_tens),("GT",true_mask_tens),("Pred",mask_tens)]
         
-        scores = evaluate(out[i].unsqueeze(0),labels[i].unsqueeze(0),reduction=False)
+        scores = evaluate(out[i].unsqueeze(0),labels[i].unsqueeze(0).cpu(),reduction=False)
         str_scores = " ".join([k+": "+"{:.3f}".format(v) for k,v in scores.iloc[0].to_dict().items()])
         subfig.suptitle(f'Img {i}: {str_scores}')
 

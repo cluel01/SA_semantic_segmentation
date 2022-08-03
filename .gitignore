@@ -2,11 +2,20 @@
 .vscode
 *.tif
 *.pkl
+*.tar
+*.geojson
 
 runs/
 saved_models/*.csv
 jobs/logs
 #saved_models/*.pth
+
+#Geodata
+*.shp
+*.cpg
+*.prj
+*.shx
+*.dbf
 
 *.pth
 *.org

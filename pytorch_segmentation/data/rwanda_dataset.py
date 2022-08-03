@@ -27,8 +27,8 @@ class RwandaDataset(Dataset):
 
                 if (X is not None) and (y is not None):
                     assert len(X) == len(y)
-                    self.X = torch.as_tensor(X).float().contiguous()
-                    self.y = torch.as_tensor(y).long().contiguous()
+                    self.X = np.array(X,dtype="uint8")#torch.as_tensor(X).float().contiguous()
+                    self.y = np.array(y,dtype="uint8")#torch.as_tensor(y).long().contiguous()
                 else:
                     shape_df = gdp.read_file(shape_path).geometry
                     raster_files = [os.path.join(data_file_path,i) for i in os.listdir(data_file_path) if i.endswith(file_extension)]
@@ -38,13 +38,14 @@ class RwandaDataset(Dataset):
                     # X = np.empty(tuple((len(patches_satellite),*patch_size[::-1])),dtype="uint8")
                     # for i in range(len(patches_satellite)):
                     #     X[i,:,:,:] = patches_satellite[i]
-                    X = np.stack(patches_satellite)
-                    y = np.stack(patches_mask)
+                    X = np.stack(patches_satellite).astype("uint8")
+                    y = np.stack(patches_mask).astype("uint8")
                     assert len(X) == len(y)
 
-                    X = torch.from_numpy(X).float().contiguous()
-                    self.y = torch.from_numpy(y).long().contiguous()
-                    self.X = X / 255
+                    # X = torch.from_numpy(X).byte().contiguous()
+                    # self.y = torch.from_numpy(y).byte().contiguous()
+                    self.X = X #/ 255
+                    self.y = y
                 if indices is None:
                     self.indices = np.arange(len(self.y))
                 else:
@@ -58,10 +59,11 @@ class RwandaDataset(Dataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        image = self.X[idx]
-        mask = self.y[idx]
+        image = torch.from_numpy(self.X[idx] ).float()
+        mask = torch.from_numpy(self.y[idx] ).long()
 
-            
+        image = image / 255
+
         if self.transform:
             sample = self.transform(image=image,target=mask)
             image,mask = sample
@@ -89,28 +91,45 @@ class RwandaDataset(Dataset):
         return {"patch_size":self.patch_size,"overlap":self.overlap,"padding":self.padding,"pad_value":self.pad_value,
             	"data_file_path":self.data_file_path,"shape_path":self.shape_path}
 
-    def get_img(self,idx):
-        image = self.X[idx]
-        mask = self.y[idx]
-        if self.transform:
+    def get_img(self,idx,transform=True):
+        image = torch.from_numpy(self.X[idx]).float()
+        mask = torch.from_numpy(self.y[idx]).long()
+        
+        image = image / 255
+
+        if (self.transform) and (transform):
             sample = self.transform(image,mask)
             image,_ = sample
+
+        if image.size(0) > 3:
+            image = image[:3,:,:]
+
         plt.imshow(image.permute(1, 2, 0).numpy()  )
 
-    def get_mask(self,idx):
-        image = self.X[idx]
-        mask = self.y[idx]
-        if self.transform:
+    def get_mask(self,idx,transform=True):
+        image = torch.from_numpy(self.X[idx]).float()
+        mask = torch.from_numpy(self.y[idx]).long()
+
+        image = image / 255
+
+        if (self.transform) and (transform):
             sample = self.transform(image,mask)
             _,mask = sample
         plt.imshow(  mask.numpy()  )
     
-    def show_tuple(self,idx):
-        image = self.X[idx]
-        mask = self.y[idx]
-        if self.transform:
+    def show_tuple(self,idx,transform=True):
+        image = torch.from_numpy(self.X[idx]).float()
+        mask = torch.from_numpy(self.y[idx]).long()
+
+        image = image / 255
+        
+        if (self.transform) and (transform):
             sample = self.transform(image,mask)
             image,mask = sample
+
+        if image.size(0) > 3:
+            image = image[:3,:,:]
+
         fig, axs = plt.subplots(1,2)
         axs[0].imshow(image.permute(1, 2, 0).numpy()  )
         axs[1].imshow(  mask.numpy())
@@ -140,7 +159,7 @@ class RwandaDataset(Dataset):
                 if self.padding: 
                     satellite_area_arr,_ = pad_image_even(satellite_area_arr,self.patch_size,self.overlap)
 
-                if (satellite_area_arr.shape[1] < self.patch_size[0]) or (satellite_area_arr.shape[1] < self.patch_size[0]):
+                if (satellite_area_arr.shape[1] < self.patch_size[0]) or (satellite_area_arr.shape[2] < self.patch_size[0]):
                     print(f"Shape {f} is too small for patch size with size: {satellite_area_arr.shape}")
                     continue
 

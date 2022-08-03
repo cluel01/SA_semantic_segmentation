@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
 
+from rasterio.enums import Resampling
+from rasterio.io import MemoryFile
+
 # pad so that the sliding window can work fine based on the image -> evenly padding to all sites
 def pad_image_even(img,patch_size,overlap,dim=3,border_val=255):
     if dim==2:
@@ -28,3 +31,34 @@ def pad_image_topleft(img,patch_size,overlap,pad_size,border_val=255):
     top,bottom = pad_size,y_pad
     image = cv2.copyMakeBorder(img.transpose(1,2,0), top, bottom, left, right, cv2.BORDER_REPLICATE,value=border_val)
     return image.transpose(2,0,1),[top,bottom,left,right]
+
+def resample_raster(sat_arr,transform,meta,resampling_factor,resampling_method):
+    # rescale the metadata
+    width = sat_arr.shape[-1]
+    height = sat_arr.shape[-2]
+    org_arr = sat_arr.copy()
+    if resampling_method == "bilinear":
+        resampling_method = Resampling.bilinear
+    elif resampling_method == "cubic":
+        resampling_method = Resampling.cubic
+    elif resampling_method == "nearest":
+        resampling_method = Resampling.nearest
+
+    with MemoryFile() as memfile:
+        with memfile.open(**meta) as dataset:
+            dataset.write(sat_arr)
+            data = dataset.read(
+            out_shape=(
+                    dataset.count,
+                    int(dataset.height * resampling_factor),
+                    int(dataset.width * resampling_factor)
+                ),
+                resampling=Resampling.bilinear
+            )
+
+    transform = transform * transform.scale(
+        (width / data.shape[-1]),
+        (height / data.shape[-2])
+    )
+
+    return data,transform,org_arr
