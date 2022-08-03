@@ -25,11 +25,11 @@ import signal
 def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
                     num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0,transform=None):
     files = []
-    print("Total number of shapes: ",len(shapes))
-
+    
     if not os.path.isdir(out_path):
         Path(out_path).mkdir(parents=True, exist_ok=True)
 
+    print("Total number of shapes: ",len(shapes))
     for idx,s in shapes.iterrows():
         print("Shape: ",idx)
         ofile = mosaic_to_raster_mp_queue_memory_multi(dataset_path,s,idx,net,out_path,device_ids,bs,
@@ -303,8 +303,8 @@ def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_
     print("Queue PID: ",pid)
 
     with tqdm(total=n,position=0) as pbar:
-        while (len(active) > 0) and (complete == True):
-            while (not out_queue.empty()) and (complete == True):
+        while (c < n) and (complete == True):
+            while (not out_queue.empty()):
                 d = out_queue.get()
                 if type(d[1]) == str:
                     print("DONE ",str(d[0]))
@@ -408,7 +408,7 @@ def queue_consumer(in_queue,out_queue,shape):
                 return
             out_queue.put(d)
         else:
-            unpatchify_window_queue(shape,d[1].numpy(),d[0],out_queue)
+            unpatchify_window_queue(shape,d[1],d[0],out_queue)
         del d
         in_queue.task_done()
 

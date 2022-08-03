@@ -19,7 +19,7 @@ from ..evaluate import evaluate
 from ..utils.preprocessing import pad_image_even,resample_raster
 
 class TestSatDataset(Dataset):
-    def __init__(self,data_file_path=None,shape_path=None,mask_path=None,years=None,transform=None,patch_size=[256,256,3],overlap=0,resampling=None,resampling_factor = 1,
+    def __init__(self,data_file_path=None,shape_path=None,mask_path=None,years=None,transform=None,patch_size=[256,256,3],overlap=0,resampling_factor = 1,
                 resampling_method = "bilinear",padding=False,pad_value=0,file_extension=".vrt"):
         if data_file_path is not None:
             self.patch_size = patch_size
@@ -30,7 +30,8 @@ class TestSatDataset(Dataset):
             self.shape_path = shape_path
             self.mask_path = mask_path
             self.transform = transform
-            
+            self.resampling_factor = resampling_factor
+            self.resampling_method = resampling_method
             if years is None:
                 years = list(range(2008,2019))
             self.years = years
@@ -48,10 +49,19 @@ class TestSatDataset(Dataset):
             patches = []
             masks = []
             mapping = {}
+            n_pixels = {}
             for y,f in data_dict.items():
                 shp_file,raster_file,mask_file = f
                 shape_df = gdp.read_file(shp_file).geometry
+                if type(resampling_factor) == int:
+                    res_factor = resampling_factor
+                elif type(resampling_factor) == dict:
+                    if y not in resampling_factor:
+                        print(f"INFO: Year {y} not included in resampling!")
+                        continue
+                    res_factor = resampling_factor[y]
 
+                n_pixels_year = 0
                 with rasterio.open(raster_file) as src_sat:
                     self.sat_meta = src_sat.meta.copy()
                     start_idx = len(patches)
@@ -75,14 +85,9 @@ class TestSatDataset(Dataset):
                                         "height": sat_arr.shape[1],
                                         "width": sat_arr.shape[2],
                                         "transform": out_transform})
-                        
-                        if resampling is not None:
-                            if type(resampling) == bool:
-                                if resampling == True:
-                                    sat_arr,out_transform,org_arr = resample_raster(sat_arr,out_transform,out_meta,resampling_factor,resampling_method)
-                            elif type(resampling) == dict:
-                                if resampling[y] ==  True:
-                                    sat_arr,out_transform,org_arr = resample_raster(sat_arr,out_transform,out_meta,resampling_factor,resampling_method)
+
+                        if res_factor != 1:
+                            sat_arr,out_transform,org_arr = resample_raster(sat_arr,out_transform,out_meta,res_factor,resampling_method)
 
 
                         if (sat_arr.shape[1] < self.patch_size[0]) or (sat_arr.shape[2] < self.patch_size[1]):
@@ -95,17 +100,13 @@ class TestSatDataset(Dataset):
                         if len(mask_df) > 0:
                             with MemoryFile() as memfile:
                                 with memfile.open(**out_meta) as dataset:
-                                    if resampling is not None:
+                                    if res_factor != 1:
                                         dataset.write(org_arr)
                                         mask_arr,_,_ = raster_geometry_mask(dataset,mask_df,invert=True)
                                         out_meta["count"] = 1
                                         mask_arr = np.expand_dims(mask_arr,0)
-                                        if type(resampling) == bool:
-                                            if resampling == True:
-                                                mask_arr,_,_ = resample_raster(mask_arr,out_meta["transform"],out_meta,resampling_factor,resampling_method)
-                                        elif type(resampling) == dict:
-                                            if resampling[y] ==  True:
-                                                mask_arr,_,_ = resample_raster(mask_arr,out_meta["transform"],out_meta,resampling_factor,resampling_method)
+                                        
+                                        mask_arr,_,_ = resample_raster(mask_arr,out_meta["transform"],out_meta,res_factor,resampling_method)
                                         mask_arr = mask_arr.squeeze(0)
                                     else:
                                         dataset.write(sat_arr)
@@ -118,11 +119,17 @@ class TestSatDataset(Dataset):
                         assert len(p) == len(m)        
                         masks.extend(m)
                         patches.extend(p)
+                        if res_factor != 1:
+                            n_pixels_year += np.prod(org_arr.shape)
+                        else:
+                            n_pixels_year += np.prod(sat_arr.shape)
                     mapping[y] = [start_idx,len(patches)] #start, end
+                    n_pixels[y] = n_pixels_year
             
             self.patches = np.stack(patches).astype("uint8")
             self.masks = np.stack(masks).astype("uint8")
             self.mapping = mapping
+            self.n_pixels = n_pixels
             print("Size: ",len(self.patches))
         else:
             raise ValueError("Missing dataset_path or data_file_path!")
@@ -188,7 +195,12 @@ class TestSatDataset(Dataset):
 
     def evaluate(self,predictions,reduction=False):
         masks = torch.from_numpy(self.masks).long()
-        total_score = None
+        total_score = 0
+
+        
+        total_pixels = sum(self.n_pixels.values())
+
+        #Based on number of pixels per year
         for y,idxs in self.mapping.items():
             start,end = idxs
             y_true = masks[start:end]
@@ -196,13 +208,31 @@ class TestSatDataset(Dataset):
             score = evaluate(y_true,y_pred,reduction=reduction)
             print(f"Year {str(y)}: ",score)
 
-            if total_score is None:
-                total_score = score
-            else:
-                total_score += score*len(y_true)
-        total_score = total_score / len(masks)
+            weight = self.n_pixels[y] / total_pixels
+            total_score += score * weight
         print("Total score: ",total_score)
         return total_score
+
+        #Weighting based on res_factor
+        #n = 0
+        # for y,idxs in self.mapping.items():
+        #     start,end = idxs
+        #     y_true = masks[start:end]
+        #     y_pred = predictions[start:end]
+        #     score = evaluate(y_true,y_pred,reduction=reduction)
+        #     print(f"Year {str(y)}: ",score)
+
+        #     if type(self.resampling_factor) == int:
+        #         res_factor = self.resampling_factor
+        #     elif type(self.resampling_factor) == dict:
+        #         res_factor = self.resampling_factor[y]
+
+        #     n_true = len(y_true) // res_factor
+        #     total_score += score * n_true
+        #     n += n_true
+        # total_score = total_score / n
+        # print("Total score: ",total_score)
+        # return total_score
 
 
     def _create_patches(self,sat_arr):             

@@ -3,6 +3,7 @@
 *.tif
 *.pkl
 *.tar
+*.geojson
 
 runs/
 saved_models/*.csv
