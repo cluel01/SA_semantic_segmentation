@@ -148,10 +148,12 @@ def unpatchify_window_queue(shape,patches,start_idx,out_queue):
     patch_size = np.array(shape["patch_size"],dtype=int)
     org_patch_size = (patch_size // rescale_factor).tolist()
 
-    grid = np.arange(ny*nx).reshape(ny,nx)
-    y,x = np.where(grid == start_idx)
-    y = int(y)
-    x = int(x)
+    # grid = np.arange(ny*nx).reshape(ny,nx)
+    # y,x = np.where(grid == start_idx)
+    # y = int(y)
+    # x = int(x)
+    y = int(start_idx // nx )
+    x = int(start_idx % nx)
 
     col_off = (int(patch_size[0] // rescale_factor) - pad*2) * x  
     row_off = (int(patch_size[1] // rescale_factor) - pad*2) * y

@@ -198,7 +198,7 @@ class SatInferenceDataset(Dataset):
 
         w_list = []
         while y <= max_y:
-            n_x = 0 #int((w-patch_size[0]+2*padding) // step_size)
+            n_x = 0 
             x = window.col_off-padding
             while x <= max_x:
                 w_patch = patch_size[0]

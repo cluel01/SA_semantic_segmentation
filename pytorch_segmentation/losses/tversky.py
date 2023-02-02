@@ -90,23 +90,31 @@ class TverskyLoss(nn.Module):
 
 
 class FocalTverskyLoss(nn.Module):
-    def __init__(self, alpha: float, beta: float, gamma: float) -> None:
+    def __init__(self, weight=None, size_average=True,smooth=1, alpha=0.7, beta=0.3, gamma=4/3):
         super(FocalTverskyLoss, self).__init__()
-        self.alpha: float = alpha
-        self.beta: float = beta
+        self.alpha = alpha
+        self.beta = beta
         self.gamma = gamma
-        self.eps: float = 1e-6
-        self.tv = TverskyLoss(alpha,beta)
+        self.smooth = smooth
 
-
-    def forward(
-            self,
-            input: torch.Tensor,
-            target: torch.Tensor) -> torch.Tensor:
-        tv = self.tv(input,target)
-        #return torch.pow((1-tv),self.gamma)
-        return torch.pow(tv,self.gamma)
-
+    def forward(self, inputs, targets):
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = torch.sigmoid(inputs)       
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        #True Positives, False Positives & False Negatives
+        TP = (inputs * targets).sum()    
+        FP = ((1-targets) * inputs).sum()
+        FN = (targets * (1-inputs)).sum()
+        
+        Tversky = (TP + self.smooth) / (TP + self.alpha*FP + self.beta*FN + self.smooth)  
+        FocalTversky = (1 - Tversky)**self.gamma
+                       
+        return FocalTversky
 
 ######################
 # functional interface

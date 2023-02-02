@@ -2,7 +2,6 @@ from configparser import Interpolation
 import random
 
 import numpy as np
-from pyproj import transform
 import torch
 from torchvision import transforms as T
 from torchvision.transforms import functional as F
@@ -28,6 +27,27 @@ class Compose:
             image, target = t(image, target)
         return image, target
 
+class RandomApply:
+    def __init__(self, transforms,p=0.5):
+        self.transforms = transforms
+        self.p = p
+
+    def __call__(self, image, target):
+        if random.random() < self.p:
+            for t in self.transforms:
+                image, target = t(image, target)
+        return image, target
+
+class Resize:
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, image, target):
+        image = F.resize(image, self.size)
+        if target is not None:
+            target = F.resize(target.unsqueeze(0), self.size, interpolation=T.InterpolationMode.NEAREST)
+        return image, target.squeeze(0)
+
 
 class RandomResize:
     def __init__(self, min_size, max_size=None):
@@ -39,7 +59,8 @@ class RandomResize:
     def __call__(self, image, target):
         size = random.randint(self.min_size, self.max_size)
         image = F.resize(image, size)
-        target = F.resize(target.unsqueeze(0), size, interpolation=T.InterpolationMode.NEAREST)
+        if target is not None:
+            target = F.resize(target.unsqueeze(0), size, interpolation=T.InterpolationMode.NEAREST)
         return image, target.squeeze(0)
 
 
@@ -60,7 +81,8 @@ class RandomVerticalFlip:
     def __call__(self, image, target):
         if random.random() < self.flip_prob:
             image = F.vflip(image)
-            target = F.vflip(target)
+            if target is not None:
+                target = F.vflip(target)
         return image, target
 
 
@@ -73,7 +95,8 @@ class RandomCrop:
         target = pad_if_smaller(target, self.size, fill=255)
         crop_params = T.RandomCrop.get_params(image, (self.size, self.size))
         image = F.crop(image, *crop_params)
-        target = F.crop(target, *crop_params)
+        if target is not None:
+            target = F.crop(target, *crop_params)
         return image, target
 
 
@@ -83,14 +106,16 @@ class CenterCrop:
 
     def __call__(self, image, target):
         image = F.center_crop(image, self.size)
-        target = F.center_crop(target, self.size)
+        if target is not None:
+            target = F.center_crop(target, self.size)
         return image, target
 
 
 class PILToTensor:
     def __call__(self, image, target):
         image = F.pil_to_tensor(image)
-        target = torch.as_tensor(np.array(target), dtype=torch.int64)
+        if target is not None:
+            target = torch.as_tensor(np.array(target), dtype=torch.int64)
         return image, target
 
 
@@ -138,9 +163,10 @@ class RandomRotation:
     def __call__(self, image, target):
         angle = int(np.random.choice(range(self.degrees)))
         image = F.rotate(image,angle=angle,fill=self.fill)
-        target = F.rotate(target.unsqueeze(0),angle=angle,fill=self.fill)
+        if target is not None:
+            target = F.rotate(target.unsqueeze(0),angle=angle,fill=self.fill).squeeze()
         
-        return image,target.squeeze()
+        return image,target
 
 class Pad:
     def __init__(self, padding,fill=0,padding_mode="reflect"):
@@ -151,8 +177,8 @@ class Pad:
     def __call__(self, image, target):
         image = F.pad(image,self.padding,self.fill,self.padding_mode)
 
-        
-        target = F.pad(target,self.padding,self.fill,self.padding_mode)
+        if target is not None:
+            target = F.pad(target,self.padding,self.fill,self.padding_mode)
         
         return image,target
 
@@ -199,7 +225,8 @@ class RandomResizeCrop:
         image = F.crop(image, *crop_params)
         target = F.crop(target, *crop_params)
         image = F.resize(image,self.size,self.interpolation)
-        target = F.resize(target.unsqueeze(0),self.size,self.interpolation)
+        if target is not None:
+            target = F.resize(target.unsqueeze(0),self.size,self.interpolation)
         return image,target.squeeze(0)
 
 
@@ -210,9 +237,11 @@ class UnmaskEdges:
 
     def __call__(self, image, target):
         h,w = target.shape
-        target_new = torch.zeros(target.shape,dtype=target.dtype)
-        target_new[self.height:h-self.height,self.width:w-self.width] = target[self.height:h-self.height,self.width:w-self.width]
-        return image,target_new
+        if target is not None:
+            target_new = torch.zeros(target.shape,dtype=target.dtype)
+            target_new[self.height:h-self.height,self.width:w-self.width] = target[self.height:h-self.height,self.width:w-self.width]
+            target = target_new
+        return image,target
 
 
 

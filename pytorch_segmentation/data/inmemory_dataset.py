@@ -9,16 +9,19 @@ from shapely import geometry
 from sklearn.model_selection import train_test_split
 
 from ..utils.preprocessing import pad_image_even
+from ..utils.plotting import save_ground_truth_plots
 
 class InMemorySatDataset(Dataset):
-    def __init__(self,data_file_path=None,mask_path=None,X=None,y=None,transform=None,patch_size=[256,256,3],overlap=0,padding=False,pad_value=0,file_extension=".tif",indices=None):
+    def __init__(self,data_file_path=None,mask_path=None,X=None,y=None,transform=None,n_channels=3,patch_size=[256,256],overlap=0,padding=False,pad_value=0,file_extension=".tif",mode="segmentation",indices=None):
         self.transform = transform
         self.patch_size = patch_size
+        self.n_channels = n_channels
         self.overlap = overlap
         self.padding = padding
         self.pad_value = pad_value
         self.data_file_path = data_file_path
         self.mask_path = mask_path
+        self.mode = mode
 
         if (X is not None) and (y is not None):
             self.X = np.array(X,dtype="uint8")
@@ -27,29 +30,27 @@ class InMemorySatDataset(Dataset):
             if (data_file_path is not None) and (mask_path is not None):
                 satellite_img = rasterio.open(data_file_path)
 
-                mask_areas = []
+                mask_areas = {}
                 for i in os.listdir(mask_path):
                     if i.endswith(file_extension):
                         m = rasterio.open(os.path.join(mask_path,i))
                         if (m.shape[0] < self.patch_size[0]) or (m.shape[1] < self.patch_size[1]):
                             print(f"Shape {i} is too small for patch size with size: {m.shape}")
                         else:
-                            mask_areas.append(m)
+                            mask_areas[i] = m
 
                 assert len(mask_areas) > 0
-
-                patches_masks = self._create_mask_patches(mask_areas)
-                patches_data = self._create_data_patches(satellite_img,mask_areas)
-
-                assert len(patches_masks) == len(patches_data)
-
-                X = np.stack(patches_data).astype("uint8")
-                y = np.stack(patches_masks).astype("uint8")
-
-                self.X = X 
-                self.y = y
                 
-                for i in mask_areas:
+                patches_masks,file_mapping = self._create_mask_patches(mask_areas)
+                y  = np.vstack(patches_masks).astype("uint8")
+                self.y = y
+
+                self.X = np.empty((len(self.y),n_channels,*patch_size),dtype="uint8")
+                self._create_data_patches(satellite_img,mask_areas)            
+
+                self.file_mapping = file_mapping
+                
+                for i in mask_areas.values():
                     i.close()
                 satellite_img.close()
     
@@ -73,6 +74,12 @@ class InMemorySatDataset(Dataset):
         if self.transform:
             sample = self.transform(image=image,target=mask)
             image,mask = sample
+        
+        if self.mode == "classification":
+            count = torch.sum(mask)
+            mask = 0
+            if count > 0:
+                mask = 1
 
         return {"x":image, "y":mask}
 
@@ -135,11 +142,49 @@ class InMemorySatDataset(Dataset):
         return train_set,test_set
 
     def get_config(self):
-        return {"patch_size":self.patch_size,"overlap":self.overlap,"padding":self.padding,"pad_value":self.pad_value,"size":len(self)}
+        return {"patch_size":self.patch_size,"n_channels":self.n_channels,"overlap":self.overlap,"padding":self.padding,"pad_value":self.pad_value,"size":len(self)}
+
+    def export_patches(self,save_dir,figsize=(10,5),alpha=0.6,archived=False,max_n=None):
+        import string,random,shutil
+        import tarfile
+
+        if max_n is None:
+            max_n = np.inf
+            filter_idxs = None
+        else:
+            filter_idxs = np.random.choice(np.arange(len(self)),size=max_n)
+
+        if archived:
+            org_save_dir = save_dir
+            rnd_string = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+            save_dir = os.path.join("/tmp",rnd_string)
+
+        for fname, idxs in self.file_mapping.items():
+
+            i = torch.arange(*idxs)
+            if filter_idxs is not None:
+                i = np.intersect1d(i,filter_idxs)
+
+            imgs = torch.from_numpy(self.X[i])
+            masks = torch.from_numpy(self.y[i])
+            save_ground_truth_plots(imgs,masks,save_dir,i,fname,figsize=figsize,alpha=alpha)
+
+
+        if archived:
+            fname = os.path.join(save_dir,"imgs.tgz")
+            with tarfile.open(fname, "w:gz") as tar:
+                tar.add(save_dir, arcname=os.path.basename(save_dir))
+            dst = os.path.join(org_save_dir,"imgs.tgz")
+
+            shutil.move(fname,dst)
+            shutil.rmtree(save_dir)
+        return
 
     def _create_mask_patches(self,mask_areas):
         patches_masks = []
-        for ma in mask_areas:
+        mapping = {}
+        start_idx = 0
+        for fname,ma in mask_areas.items():
             label_area_arr = ma.read(1)#, #window = from_bounds(*bounds, la.transform))
             if self.padding:
                 label_area_arr,_  = pad_image_even(label_area_arr,self.patch_size,self.overlap,dim=2,border_val=self.pad_value)
@@ -149,13 +194,16 @@ class InMemorySatDataset(Dataset):
                                         (patches.shape[0]*patches.shape[1], 
                                         patches.shape[2], patches.shape[3])) 
                                         # = (#patches, 256, 256)
-            patches_masks.extend(reshaped_patches)
-        return patches_masks
+            reshaped_patches = reshaped_patches.astype("uint8")
+            patches_masks.append(reshaped_patches)
+            mapping[fname] = [start_idx,start_idx+len(reshaped_patches)]
+            start_idx += len(reshaped_patches)
+        return patches_masks,mapping
         
 
     def _create_data_patches(self,satellite_img,mask_areas):
-        patches_satellite = []
-        for ma in mask_areas:
+        idx = 0
+        for ma in mask_areas.values():
             # get coordinates 
             geom = geometry.box(*ma.bounds)
 
@@ -169,15 +217,16 @@ class InMemorySatDataset(Dataset):
             if self.padding: 
                 satellite_area_arr,_ = pad_image_even(satellite_area_arr,self.patch_size,self.overlap)
             patches = patchify(satellite_area_arr, 
-                                    (self.patch_size[2], self.patch_size[0], self.patch_size[1]), 
+                                    (self.n_channels, self.patch_size[0], self.patch_size[1]), 
                                     step=self.patch_size[0]-self.overlap)[0]
             reshaped_patches = np.reshape(patches, 
                                             (patches.shape[0]*patches.shape[1], 
                                             patches.shape[2], patches.shape[3], patches.shape[3]))
                                             # = (#patches, 3, 256, 256)
-            patches_satellite.extend(reshaped_patches)
-        return patches_satellite
-
+            end_idx = idx + len(reshaped_patches)
+            self.X[idx:end_idx] = reshaped_patches
+            idx += len(reshaped_patches)
+        # return patches_satellite
 
 
 

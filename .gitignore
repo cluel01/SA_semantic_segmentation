@@ -4,6 +4,11 @@
 *.pkl
 *.tar
 *.geojson
+*.mmap
+*.npy
+
+
+saved_models/*.cfg 
 
 runs/
 saved_models/*.csv

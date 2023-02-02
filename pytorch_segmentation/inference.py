@@ -40,31 +40,31 @@ def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
         else:
             print("Error for ",idx)
     
-    if len(shapes) > 1:
-        vrt_file = os.path.join(out_path,"tmp_vrt.vrt")
-        out_file = os.path.join(out_path,"mask_"+time.strftime("%d_%m_%Y_%H%M%S")+".tif")
-        start = time.time()
-        gdal.SetConfigOption("GDAL_CACHEMAX","1024")
-        gdal.SetConfigOption("GDAL_TIFF_OVR_BLOCKSIZE","128")
-        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK","True")
+#     if len(shapes) > 1:
+#         vrt_file = os.path.join(out_path,"tmp_vrt.vrt")
+#         out_file = os.path.join(out_path,"mask_"+time.strftime("%d_%m_%Y_%H%M%S")+".tif")
+#         start = time.time()
+#         gdal.SetConfigOption("GDAL_CACHEMAX","1024")
+#         gdal.SetConfigOption("GDAL_TIFF_OVR_BLOCKSIZE","128")
+#         gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK","True")
         
-        vrt = gdal.BuildVRT(vrt_file,files)
-        vrt = None
+#         vrt = gdal.BuildVRT(vrt_file,files)
+#         vrt = None
         
-        #options = "-of COG -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co BLOCKSIZE="+str(blocksize)
+#         #options = "-of COG -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co BLOCKSIZE="+str(blocksize)
 
-        options = "-of Gtiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES \
-                     -co BLOCKXSIZE="+str(blocksize)+" -co BLOCKYSIZE="+str(blocksize)
+#         options = "-of Gtiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES \
+#                      -co BLOCKXSIZE="+str(blocksize)+" -co BLOCKYSIZE="+str(blocksize)
 
-        ds = gdal.Translate(out_file,vrt_file,options=options)
-        ds = None
-        os.remove(vrt_file)
-        end = time.time()
-        #os.system("gdal_translate -of GTiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES -co COPY_SRC_OVERVIEWS=YES " + vrt_file + " " + out_file)
+#         ds = gdal.Translate(out_file,vrt_file,options=options)
+#         ds = None
+#         os.remove(vrt_file)
+#         end = time.time()
+#         #os.system("gdal_translate -of GTiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES -co COPY_SRC_OVERVIEWS=YES " + vrt_file + " " + out_file)
         
-        for i in files:
-            os.remove(i)
-        print(f"Created Tif file in {end-start} seconds: {out_file}")
+#         for i in files:
+#             os.remove(i)
+#         print(f"Created Tif file in {end-start} seconds: {out_file}")
    
         # vrt = gdal.BuildVRT(vrt_file,files)
         # vrt = None
@@ -74,6 +74,7 @@ def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
         #         out_meta = src.meta.copy()
         #         out_meta.update({"num_threads":"all_cpus","bigtiff":"yes","compress":compress,"blocksize":blocksize,"tiled":True})
         #         cog_translate(vrt,out_file,out_meta)
+    return files
     
 
 
