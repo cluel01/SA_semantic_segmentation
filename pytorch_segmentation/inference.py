@@ -9,6 +9,7 @@ from torch.nn import DataParallel
 import rasterio
 # from rasterio.enums import Resampling
 # from rasterio.vrt import WarpedVRT
+import fiona
 from osgeo import gdal
 import os
 from tqdm import tqdm
@@ -21,9 +22,10 @@ from .utils.cog_translate import cog_translate
 
 import signal
 
+
 #Wrapper function that can call all different versions
 def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
-                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0,transform=None):
+                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0,transform=None,model_class="unet"):
     files = []
     
     if not os.path.isdir(out_path):
@@ -33,48 +35,48 @@ def mosaic_to_raster(dataset_path,shapes,net,out_path,device_ids,bs=16,
     for idx,s in shapes.iterrows():
         print("Shape: ",idx)
         ofile = mosaic_to_raster_mp_queue_memory_multi(dataset_path,s,idx,net,out_path,device_ids,bs,
-                        num_workers,pin_memory,compress,blocksize,nodata,transform)
+                        num_workers,pin_memory,compress,blocksize,nodata,transform,model_class)
 
         if ofile is not None:
             files.append(ofile)
         else:
             print("Error for ",idx)
     
-#     if len(shapes) > 1:
-#         vrt_file = os.path.join(out_path,"tmp_vrt.vrt")
-#         out_file = os.path.join(out_path,"mask_"+time.strftime("%d_%m_%Y_%H%M%S")+".tif")
-#         start = time.time()
-#         gdal.SetConfigOption("GDAL_CACHEMAX","1024")
-#         gdal.SetConfigOption("GDAL_TIFF_OVR_BLOCKSIZE","128")
-#         gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK","True")
+    #Turned vrt creation off
+    # if len(shapes) > 1:
+    #     vrt_file = os.path.join(out_path,"tmp_vrt.vrt")
+    #     out_file = os.path.join(out_path,"mask_"+time.strftime("%d_%m_%Y_%H%M%S")+".tif")
+    #     start = time.time()
+    #     gdal.SetConfigOption("GDAL_CACHEMAX","1024")
+    #     gdal.SetConfigOption("GDAL_TIFF_OVR_BLOCKSIZE","128")
+    #     gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK","True")
         
-#         vrt = gdal.BuildVRT(vrt_file,files)
-#         vrt = None
+    #     vrt = gdal.BuildVRT(vrt_file,files)
+    #     vrt = None
         
-#         #options = "-of COG -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co BLOCKSIZE="+str(blocksize)
+    #     #options = "-of COG -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co BLOCKSIZE="+str(blocksize)
 
-#         options = "-of Gtiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES \
-#                      -co BLOCKXSIZE="+str(blocksize)+" -co BLOCKYSIZE="+str(blocksize)
+    #     options = "-of Gtiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES \
+    #                  -co BLOCKXSIZE="+str(blocksize)+" -co BLOCKYSIZE="+str(blocksize)
 
-#         ds = gdal.Translate(out_file,vrt_file,options=options)
-#         ds = None
-#         os.remove(vrt_file)
-#         end = time.time()
-#         #os.system("gdal_translate -of GTiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES -co COPY_SRC_OVERVIEWS=YES " + vrt_file + " " + out_file)
+    #     ds = gdal.Translate(out_file,vrt_file,options=options)
+    #     ds = None
+    #     os.remove(vrt_file)
+    #     end = time.time()
+    #     #os.system("gdal_translate -of GTiff -co NUM_THREADS=ALL_CPUS -co BIGTIFF=YES -co COMPRESS=DEFLATE -co TILED=YES -co COPY_SRC_OVERVIEWS=YES " + vrt_file + " " + out_file)
         
-#         for i in files:
-#             os.remove(i)
-#         print(f"Created Tif file in {end-start} seconds: {out_file}")
+    #     for i in files:
+    #         os.remove(i)
+    #     print(f"Created Tif file in {end-start} seconds: {out_file}")
    
-        # vrt = gdal.BuildVRT(vrt_file,files)
-        # vrt = None
-        # with rasterio.open(vrt_file) as src:
-        #     with WarpedVRT(src,
-        #                 resampling=Resampling.nearest) as vrt:
-        #         out_meta = src.meta.copy()
-        #         out_meta.update({"num_threads":"all_cpus","bigtiff":"yes","compress":compress,"blocksize":blocksize,"tiled":True})
-        #         cog_translate(vrt,out_file,out_meta)
-    return files
+    #     # vrt = gdal.BuildVRT(vrt_file,files)
+    #     # vrt = None
+    #     # with rasterio.open(vrt_file) as src:
+    #     #     with WarpedVRT(src,
+    #     #                 resampling=Resampling.nearest) as vrt:
+    #     #         out_meta = src.meta.copy()
+    #     #         out_meta.update({"num_threads":"all_cpus","bigtiff":"yes","compress":compress,"blocksize":blocksize,"tiled":True})
+    #     #         cog_translate(vrt,out_file,out_meta)
     
 
 
@@ -252,110 +254,111 @@ def mosaic_to_raster_mp_queue_memory(dataset_path,shape,shape_idx,net,out_path,d
         print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
 
 def mosaic_to_raster_mp_queue_memory_multi(dataset_path,shape,shape_idx,net,out_path,device_ids,bs=16,
-                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0,transform=None):
-    try:
-        mp.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass
-    
-    if not torch.cuda.is_available():
-        raise Exception("No Cuda device available!")
+                                    num_workers=4,pin_memory=True,compress="deflate",blocksize=512,nodata=0,transform=None,model_class="unet"):
+    with rasterio.Env(GDAL_CACHEMAX=32000000,GDAL_TIFF_INTERNAL_MASK=True,GDAL_TIFF_OVR_BLOCKSIZE=128): #TODO change to variable
+        try:
+            mp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass
+        
+        if not torch.cuda.is_available():
+            raise Exception("No Cuda device available!")
 
-    if device_ids == "all":
-        world_size = torch.cuda.device_count()
-        device_ids = list(range(world_size))
-    elif type(device_ids) == list:
-        world_size = len(device_ids)
-    elif type(device_ids) == int:
-        device_ids = [device_ids]
-        world_size = 1
-    elif (device_ids is None) or device_ids == "cpu":
-        device_ids = [torch.device("cpu")]
-        world_size = 1
+        if device_ids == "all":
+            world_size = torch.cuda.device_count()
+            device_ids = list(range(world_size))
+        elif type(device_ids) == list:
+            world_size = len(device_ids)
+        elif type(device_ids) == int:
+            device_ids = [device_ids]
+            world_size = 1
+        elif (device_ids is None) or device_ids == "cpu":
+            device_ids = [torch.device("cpu")]
+            world_size = 1
 
-    n = int(np.prod(shape["grid_shape"]))
+        n = int(np.prod(shape["grid_shape"]))
 
-    memfile = create_memfile(shape,compress,blocksize,nodata) #create_files(shapes,out_path,compress,blocksize) #
+        memfile,mem_meta = create_memfile(shape,compress,blocksize,nodata) #create_files(shapes,out_path,compress,blocksize) #
+        in_queue = mp.JoinableQueue(500)#mp.JoinableQueue(100)
+        out_queue = mp.JoinableQueue(3000)# mp.JoinableQueue(10000)
+        #queue = mp.Queue(500)#mp.Queue(500)#mp.JoinableQueue(1000)
+        event = mp.Event()
+        # context = mp.spawn(run_inference_queue,
+        #     args=(device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event),
+        #     nprocs=world_size,
+        #     join=False)
+        processes = []
+        for rank in range(world_size):
+            p = mp.Process(target=run_inference_queue, args=(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event,transform,model_class))
+            p.start()    
+            print(p.pid) 
+            processes.append(p)
 
-    in_queue = mp.JoinableQueue(500)#mp.JoinableQueue(100)
-    out_queue = mp.JoinableQueue(10000)# mp.JoinableQueue(10000)
-    #queue = mp.Queue(500)#mp.Queue(500)#mp.JoinableQueue(1000)
-    event = mp.Event()
-    # context = mp.spawn(run_inference_queue,
-    #     args=(device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event),
-    #     nprocs=world_size,
-    #     join=False)
-    processes = []
-    for rank in range(world_size):
-        p = mp.Process(target=run_inference_queue, args=(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,in_queue,event,transform))
-        p.start()     
-        processes.append(p)
+        consumers = [mp.Process(target=queue_consumer, args=(in_queue,out_queue,shape), daemon=False)
+                    for _ in range(world_size)]
+        
+        for p in consumers:
+            p.start()
 
-    consumers = [mp.Process(target=queue_consumer, args=(in_queue,out_queue,shape), daemon=False)
-                 for _ in range(world_size)]
-    
-    for p in consumers:
-         p.start()
+        complete = True
+        active = device_ids.copy()
+        c = 0
+        pid = os.getpid()
+        print("Queue PID: ",pid)
 
-    complete = True
-    active = device_ids.copy()
-    c = 0
-    pid = os.getpid()
-    print("Queue PID: ",pid)
+        with tqdm(total=n,position=0) as pbar:
+            while (c < n) and (complete == True):
+                while (not out_queue.empty()):
+                    d = out_queue.get()
+                    if type(d[1]) == str:
+                        print("DONE ",str(d[0]))
+                        active.remove(d[0])
+                        if d[1] == "ERROR":
+                            complete = False
+                    else:
+                        memfile.write(d[1],window=d[0],indexes=1)
+                        c += 1
+                        pbar.update(1)
+                        if (c % 10000) == 0:
+                            print("In-Queue length: ",in_queue.qsize())
+                            print("Out-Queue length: ",out_queue.qsize())
+                            print("Memory allocated (MB): ",psutil.Process().memory_info().rss / (1024 * 1024))
+                    del d
+                    out_queue.task_done()
 
-    with tqdm(total=n,position=0) as pbar:
-        while (c < n) and (complete == True):
-            while (not out_queue.empty()):
-                d = out_queue.get()
-                if type(d[1]) == str:
-                    print("DONE ",str(d[0]))
-                    active.remove(d[0])
-                    if d[1] == "ERROR":
-                        complete = False
-                else:
-                    memfile.write(d[1],window=d[0],indexes=1)
-                    c += 1
-                    pbar.update(1)
-                    if (c % 50000) == 0:
-                        print("In-Queue length: ",in_queue.qsize())
-                        print("Out-Queue length: ",out_queue.qsize())
-                        print("Memory allocated (MB): ",psutil.Process().memory_info().rss / (1024 * 1024))
-                del d
-                out_queue.task_done()
+        for _ in range(world_size): #stop consumer 
+            in_queue.put([None,"QUIT"])
 
-    for _ in range(world_size): #stop consumer 
-        in_queue.put([None,"QUIT"])
+        time.sleep(1)
+        in_queue.close()
+        out_queue.close()
+        event.set()
+        #context.join()
+        for p in processes:
+            p.join()
 
-    time.sleep(1)
-    in_queue.close()
-    out_queue.close()
-    event.set()
-    #context.join()
-    for p in processes:
-        p.join()
+        stop_child_pids(pid) # to clean up memory 
+        time.sleep(1)
 
-    stop_child_pids(pid) # to clean up memory 
-    time.sleep(1)
-
-    out_file = None
-    if complete:
-        start = time.time()
-        out_meta = shape["sat_meta"]
-        out_file = os.path.join(out_path,shape["name"]+".tif")
-        cog_translate(
-            memfile,
-            out_file,
-            out_meta
-        )
+        out_file = None
+        if complete:
+            start = time.time()
+            out_meta = mem_meta.copy() #shape["sat_meta"]
+            out_file = os.path.join(out_path,shape["name"]+".tif")
+            cog_translate(
+                memfile,
+                out_file,
+                out_meta
+            )
 
 
+            end = time.time()
+            print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
         memfile.close()
-        end = time.time()
-        print(f"INFO: Written {out_file} in {end-start:.3f} seconds")
-    return out_file
+        return out_file
 
 
-def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,queue,event,transform):
+def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs,num_workers,pin_memory,queue,event,transform,model_class):
     try:
         mp_context = "fork"
         #torch.set_num_threads(1) #prevent memory leakage
@@ -375,7 +378,7 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
         start_idx = shape["start_idx"]
         end_idx  = start_idx + np.prod(shape["grid_shape"])
         sampler = DistributedEvalSampler(dataset,start_idx=start_idx,end_idx=end_idx,num_replicas=world_size,rank=rank)
-        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context,persistent_workers=False)
+        dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
         #dl = DataLoader(dataset,batch_size=bs,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context,persistent_workers=True)
         #dl = DataLoader(dataset,batch_size=bs,collate_fn=custom_collate_fn,num_workers = num_workers,pin_memory=pin_memory,sampler=sampler,multiprocessing_context=mp_context)
 
@@ -387,10 +390,17 @@ def run_inference_queue(rank,device_ids,world_size,dataset_path,shape_idx,net,bs
                 #x = torch.from_numpy(x).float().to(rank,non_blocking=True)#[0].to(device)
                 x = x.float().to(device_id,non_blocking=True)
                 b_idx = int(idx[0]) - start_idx
-                out = net(x)
-                out = F.softmax(out,dim=1)
-                out = torch.argmax(out,dim=1)
-                out = out.byte().cpu()
+                if model_class == "unet":
+                    with torch.cuda.amp.autocast():
+                        out = net(x)
+                        out = F.softmax(out,dim=1)
+                        out = torch.argmax(out,dim=1)
+                        out = out.byte().cpu()
+                elif model_class == "smp":
+                    with torch.cuda.amp.autocast():
+                        out = net(x)
+                    out = out.squeeze().sigmoid()
+                    out = (out > 0.5).byte().cpu()
                 queue.put([b_idx,out])
         queue.put([device_id,"DONE"])
         event.wait()
@@ -421,29 +431,29 @@ def custom_collate_fn(data):
     return x,idx
 
 def create_memfile(shape,compress,blocksize,nodata):
-    with rasterio.Env(GDAL_CACHEMAX=1024,GDAL_TIFF_INTERNAL_MASK=True,GDAL_TIFF_OVR_BLOCKSIZE=128): #TODO change to variable
-        memory = rasterio.MemoryFile()
-        out_transform = shape["transform"]
-        out_meta = shape["sat_meta"]
-        
-        height = shape["height"]
-        width = shape["width"]
-        out_meta.update({"driver": "GTiff",
-                        "overwrite":True,
-                        "count":1,
-                        "height": height,
-                        "width": width,
-                        "transform": out_transform,
-                        "compress":compress,
-                        "tiled":True,
-                        "blockxsize":blocksize, 
-                        "blockysize":blocksize,
-                        "BIGTIFF":'YES',
-                        "nodata":nodata,
-                        #"predictor":2,
-                        "NUM_THREADS":"ALL_CPUS"})
-        mfile = memory.open(**out_meta)
-        return mfile
+    #with rasterio.Env(GDAL_CACHEMAX=32000000000,GDAL_TIFF_INTERNAL_MASK=True,GDAL_TIFF_OVR_BLOCKSIZE=128): #TODO change to variable
+    memory = rasterio.MemoryFile()
+    out_transform = shape["transform"]
+    out_meta = shape["sat_meta"]
+    
+    height = shape["height"]
+    width = shape["width"]
+    out_meta.update({"driver": "GTiff",
+                    "overwrite":True,
+                    "count":1,
+                    "height": height,
+                    "width": width,
+                    "transform": out_transform,
+                    "compress":compress,
+                    "tiled":True,
+                    "blockxsize":blocksize, 
+                    "blockysize":blocksize,
+                    "BIGTIFF":'YES',
+                    "nodata":nodata,
+                    "PREDICTOR":2,
+                    "NUM_THREADS":"ALL_CPUS"})
+    mfile = memory.open(**out_meta)
+    return mfile,out_meta
 
 def create_files(shapes,out_path,compress,blocksize):
     memfiles = []

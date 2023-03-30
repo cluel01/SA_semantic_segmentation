@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler
 from torch import optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -30,13 +31,16 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
     print(f"INFO: Start run for {run_name}!")
 
     if cfg is not None:
+        cfg_str = {}
         #convert non-Python builtin vars to string
         for k,v in cfg.items():
             if v.__class__.__module__ != "builtins":
-                cfg[k] = str(v)
+                cfg_str[k] = str(v)
+            else:
+                cfg_str[k] = v
 
         with open(model_path + ".config", 'w') as fp:
-            json.dump(cfg, fp)
+            json.dump(cfg_str, fp)
 
     if tensorboard_path is not None:
         writer = SummaryWriter(os.path.join(tensorboard_path,run_name))
@@ -75,6 +79,7 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
             # iterate over data
             for batch in dataloader:
                 x = batch["x"].to(device)
+                #y = batch["y"].to(device)
                 y = batch["y"].to(device)
 
                 # forward pass
@@ -86,8 +91,7 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                     if deeplab:
                         outputs = outputs["out"]
 
-                    loss = loss_fn(outputs, y) #+ dice_loss(outputs,y)
-
+                    loss = loss_fn(outputs, y)
                     # the backward pass frees the graph memory, so there is no 
                     # need for torch.no_grad in this training pass
                     loss.backward()
@@ -99,7 +103,7 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                         if deeplab:
                             outputs = outputs["out"]
                         loss = loss_fn(outputs, y) #+ dice_loss(outputs,y)
-
+                        
                 # stats - whatever is the phase
                 with torch.no_grad():
                     #score = evaluate(outputs.cpu(), y.cpu())
@@ -123,13 +127,13 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
                 if phase == "train":
                     writer.add_scalar("Learning rate",optimizer.param_groups[0]["lr"],epoch)
                     
-                    if (epoch % 5 == 0) or (epochs-1 == epoch ):
-                        fig = plot_predictions_subset(model,x,y,seed=seed,deeplab=deeplab,nimgs=nimgs,figsize=figsize)
+                    if (epoch % 1 == 0) or (epochs-1 == epoch ):
+                        fig = plot_predictions_subset(model,x,y,seed=seed,model_class=deeplab,nimgs=nimgs,figsize=figsize)
                         writer.add_figure("Segmentation masks/train",fig,epoch)
 
                 if phase == "valid":
-                    if (epoch % 5 == 0) or (epochs-1 == epoch ):
-                        fig = plot_predictions_subset(model,x,y,seed=seed,deeplab=deeplab,nimgs=nimgs,figsize=figsize)
+                    if (epoch % 1 == 0) or (epochs-1 == epoch ):
+                        fig = plot_predictions_subset(model,x,y,seed=seed,model_class=deeplab,nimgs=nimgs,figsize=figsize)
                         writer.add_figure("Segmentation masks/valid",fig,epoch)
 
             if phase == "valid":
@@ -164,6 +168,178 @@ def train(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_pat
         writer.close()
     return train_loss, valid_loss    
 
+
+def train_smp(model, train_dl, valid_dl, loss_fn, optimizer, epochs,device,model_path,tensorboard_path=None,scheduler =  None,
+         scheduler_warmup=10,early_stopping = None,metric="iou",nimgs=2,figsize=(6,4),seed=42,cfg=None,fp16=False,):
+    torch.manual_seed(seed)
+    
+    if fp16:
+        fp16_scaler = GradScaler()
+    else:
+        fp16_scaler = None
+
+    run_name = os.path.basename(model_path).split(".")[0]
+    print(f"INFO: Start run for {run_name}!")
+
+    if cfg is not None:
+        cfg_str = {}
+        #convert non-Python builtin vars to string
+        for k,v in cfg.items():
+            if v.__class__.__module__ != "builtins":
+                cfg_str[k] = str(v)
+            else:
+                cfg_str[k] = v
+
+        with open(model_path + ".config", 'w') as fp:
+            json.dump(cfg_str, fp)
+
+    if tensorboard_path is not None:
+        writer = SummaryWriter(os.path.join(tensorboard_path,run_name))
+
+    start = time.time()
+    model = model.to(device)
+
+    train_loss, valid_loss = [], []
+
+    if metric == "rmse_cov":
+        best_valid_score = np.inf
+    else:
+        best_valid_score = -np.inf
+    early_stopping_counter = 0  
+    #best_valid_loss = np.inf
+    best_model_wghts = None
+    
+    for epoch in range(epochs):
+        print('Epoch {}/{}'.format(epoch, epochs - 1))
+        print('-' * 10)
+
+        if early_stopping is not None:
+            if early_stopping == early_stopping_counter:
+                print(f"INFO: Early stopping after {epoch} epochs")
+                break
+
+        for phase in ['train', 'valid']:
+            if phase == 'train':
+                model.train(True)  # Set trainind mode = true
+                dataloader = train_dl
+
+            else:
+                model.eval()  # Set model to evaluate mode
+                dataloader = valid_dl
+
+            running_loss = 0.0
+            running_score = pd.DataFrame([{"acc":0.0,"iou":0.0,"dice":0.0,"rmse_cov":0.0}])
+
+            # iterate over data
+            for batch in dataloader:
+                x = batch["x"].to(device)
+                #y = batch["y"].to(device)
+                y = batch["y"].float().to(device)
+
+                # forward pass
+                if phase == 'train':
+                    # zero the gradients
+                    optimizer.zero_grad()
+
+                    with torch.cuda.amp.autocast(fp16_scaler is not None):
+                        outputs = model(x)
+                        logits = outputs.squeeze()
+                        loss = loss_fn(logits, y) 
+
+                    if fp16_scaler is None:
+                        loss.backward()
+                        optimizer.step()
+                    else:
+                        fp16_scaler.scale(loss).backward()
+                        fp16_scaler.step(optimizer)
+                        fp16_scaler.update()
+
+                else:
+                    with torch.no_grad():
+                        with torch.cuda.amp.autocast(fp16_scaler is not None):
+                            outputs = model(x)
+                            logits = outputs.squeeze()
+                            loss = loss_fn(logits, y) 
+                        
+                # stats - whatever is the phase
+                with torch.no_grad():
+                    #score = evaluate(outputs.cpu(), y.cpu())
+                    probs = torch.sigmoid(logits)
+                    pred = (probs > 0.5).long()
+                    score,_ = evaluate(pred, y,reduction=False) #on GPU
+
+                running_score  += score*len(x)
+                running_loss += loss.item()*len(x) 
+
+            epoch_loss = running_loss / len(dataloader.dataset)
+            epoch_score = (running_score / len(dataloader.dataset)).iloc[0].to_dict()
+
+            print('{} Loss: {:.4f} {}: {}'.format(phase, epoch_loss,metric, epoch_score[metric]))
+
+            train_loss.append(epoch_loss) if phase=='train' else valid_loss.append(epoch_loss)
+
+            if tensorboard_path is not None:
+                writer.add_scalar('loss/'+phase,epoch_loss,epoch)
+                for k,v in epoch_score.items():
+                    writer.add_scalar(k+"/"+phase,v,epoch)
+
+                if phase == "train":
+                    writer.add_scalar("Learning rate",optimizer.param_groups[0]["lr"],epoch)
+                    
+                    if (epoch % 1 == 0) or (epochs-1 == epoch ):
+                        fig = plot_predictions_subset(model,x,y,seed=seed,model_class="smp",nimgs=nimgs,figsize=figsize)
+                        writer.add_figure("Segmentation masks/train",fig,epoch)
+
+                if phase == "valid":
+                    if (epoch % 1 == 0) or (epochs-1 == epoch ):
+                        fig = plot_predictions_subset(model,x,y,seed=seed,model_class="smp",nimgs=nimgs,figsize=figsize)
+                        writer.add_figure("Segmentation masks/valid",fig,epoch)
+
+            if phase == "valid":
+                if metric == "rmse_cov":
+                    if epoch_score[metric] < best_valid_score:
+                        best_valid_score = epoch_score[metric]
+
+                        if isinstance(model, nn.DataParallel):
+                            best_model_wghts = model.module.state_dict().copy()
+                        else:
+                            best_model_wghts = model.state_dict().copy()
+
+                        torch.save(best_model_wghts, model_path)
+                        early_stopping_counter = 0
+                    else:
+                        early_stopping_counter += 1
+                else:
+                    if epoch_score[metric] > best_valid_score:
+                        best_valid_score = epoch_score[metric]
+
+                        if isinstance(model, nn.DataParallel):
+                            best_model_wghts = model.module.state_dict().copy()
+                        else:
+                            best_model_wghts = model.state_dict().copy()
+
+                        torch.save(best_model_wghts, model_path)
+                        early_stopping_counter = 0
+                    else:
+                        early_stopping_counter += 1
+                
+                if scheduler:
+                    if epoch >= scheduler_warmup:
+                        scheduler.step()#(epoch_score[metric])
+                
+
+    time_elapsed = time.time() - start
+    print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
+    
+    if isinstance(model, nn.DataParallel):
+        model.module.load_state_dict(best_model_wghts)
+    else:
+        model.load_state_dict(best_model_wghts)
+    #torch.save(model.state_dict(), model_path)
+    
+    if tensorboard_path is not None:
+        writer.close()
+    return train_loss, valid_loss    
 
 def train_classification(model, train_dl,valid_dl,criterion, optimizer, scheduler, device,model_path,tensorboard_path=None, num_epochs=25,seed=42):
     torch.manual_seed(seed)

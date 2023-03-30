@@ -8,18 +8,26 @@ import os
 
 from ..evaluate import evaluate
 
-def plot_predictions_subset(net,inputs,labels,nimgs=2,figsize=(6,4),deeplab=False,seed=42):
+def plot_predictions_subset(net,inputs,labels,nimgs=2,figsize=(6,4),model_class=None,seed=42):
     np.random.seed(seed)
     idxs = np.random.choice(np.arange(len(inputs)),size=nimgs,replace=False)
     
     with torch.no_grad():
         net.eval()
         out = net(inputs)
-        if deeplab:
+        if model_class == "deeplab":
             out = out["out"]
-        out = out.cpu()
-        #out = F.softmax(out,dim=1)
-        out = torch.argmax(out,dim=1)
+        elif model_class == "smp":
+            out = out.squeeze().cpu()
+            probs = out.sigmoid()
+            pred = (probs > 0.5).long()
+        else:
+            out = out.cpu()
+            pred = torch.argmax(out,dim=1)
+            probs = F.softmax(out,dim=1)[:,1,:,:] #probs for tree
+        
+
+
         
     fig = plt.figure(figsize=figsize,constrained_layout=True)
     fig.patch.set_facecolor('white')
@@ -28,22 +36,24 @@ def plot_predictions_subset(net,inputs,labels,nimgs=2,figsize=(6,4),deeplab=Fals
     subfigs = fig.subfigures(nrows=nimgs, ncols=1)
     for n_row, subfig in enumerate(subfigs):
         i = idxs[n_row]
-        mask_tens = out[i].byte()
+        mask_tens = pred[i].byte()
         if inputs.size(0) > 3:
             img_tens = (inputs[i]*255).cpu().byte()[:3,:,:]
         else:
             img_tens = (inputs[i]*255).cpu().byte()
         true_mask_tens = labels[i].cpu().byte()
-        seg_mask_tens = draw_segmentation_masks(img_tens,mask_tens.bool(),alpha=0.6)
-        tens = [("Img",img_tens),("Mask",seg_mask_tens),("GT",true_mask_tens),("Pred",mask_tens)]
+        diff_mask_tens = true_mask_tens - mask_tens
+        diff_mask_tens[diff_mask_tens == -1] = 2
+        #seg_mask_tens = draw_segmentation_masks(img_tens,mask_tens.bool(),alpha=0.6)
+        tens = [("Img",img_tens),("GT",true_mask_tens),("SoftPred",probs[i]),("Pred",mask_tens),("Diff",diff_mask_tens),]
         
-        scores,_ = evaluate(out[i].unsqueeze(0),labels[i].unsqueeze(0).cpu(),reduction=False)
+        scores,_ = evaluate(pred[i].unsqueeze(0),labels[i].unsqueeze(0).cpu(),reduction=False)
         str_scores = " ".join([k+": "+"{:.3f}".format(v) for k,v in scores.to_dict().items()])
         subfig.suptitle(f'Img {i}: {str_scores}')
 
         
 
-        axs = subfig.subplots(nrows=1, ncols=4)
+        axs = subfig.subplots(nrows=1, ncols=5)
         for col, ax in enumerate(axs):
             ax.plot()
             title,t = tens[col]

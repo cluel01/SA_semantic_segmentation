@@ -6,7 +6,7 @@
 *.geojson
 *.mmap
 *.npy
-
+*.config
 
 saved_models/*.cfg 
 

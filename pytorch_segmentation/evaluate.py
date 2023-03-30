@@ -14,12 +14,14 @@ def evaluate(outputs,y_true,reduction=True,aggregate=True,filter_true_empty=Fals
     acc =  (torch.sum(y_pred == y_true,axis=1)/y_pred.shape[1]).cpu()
     iou = iou_score(y_pred,y_true).cpu()
     dice = dice_coeff(y_pred,y_true).cpu()
+    rmse = rmse_tree_coverage(y_pred,y_true).cpu()
 
     if filter_true_empty:
         idxs = iou != 1.0
         acc = acc[idxs]
         iou = iou[idxs]
         dice = dice[idxs]
+        rmse = rmse[idxs]
         idx = torch.arange(len(y_pred))[idxs].numpy()
     else:
         idx = torch.arange(len(y_pred)).numpy()
@@ -28,9 +30,10 @@ def evaluate(outputs,y_true,reduction=True,aggregate=True,filter_true_empty=Fals
         acc = acc.mean().item()
         iou = iou.mean().item()
         dice = dice.mean().item()
-        score = pd.DataFrame([{"acc":acc,"iou":iou,"dice":dice}]).iloc[0]
+        rmse = rmse.mean().item()
+        score = pd.DataFrame([{"acc":acc,"iou":iou,"dice":dice,"rmse_cov":rmse}]).iloc[0]
     else:
-        score =  pd.DataFrame({"acc":acc,"iou":iou,"dice":dice},index=idx)
+        score =  pd.DataFrame({"acc":acc,"iou":iou,"dice":dice,"rmse_cov":rmse},index=idx)
 
     return score,len(idx)
 
@@ -49,3 +52,10 @@ def dice_coeff(y_pred, target,absent_score=1.0):
     dice = (numerator) / (denominator)
     dice[denominator == 0] = absent_score
     return dice
+
+def rmse_tree_coverage(y_pred,target):
+    # Tree coverage = TP / (TP + FN)
+    pred_cov = y_pred.sum(1) / y_pred.shape[-1]
+    true_cov = target.sum(1) / target.shape[-1]
+    rmse = torch.sqrt((pred_cov - true_cov)**2)
+    return rmse

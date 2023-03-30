@@ -1,0 +1,14 @@
+name: tfgdal    # can change this to any name
+channels:
+  - conda-forge
+dependencies:
+  - python=3.8.6
+  - gdal
+  - rasterio
+  - geopandas
+  - matplotlib
+  - scikit-learn
+  - imgaug
+  - tqdm
+  - sqlalchemy
+  - tensorflow

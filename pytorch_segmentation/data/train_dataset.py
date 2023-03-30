@@ -15,7 +15,9 @@ from ..utils.preprocessing import pad_image_even
 from ..utils.plotting import save_ground_truth_plots
 
 class TrainDataset(Dataset):
-    def __init__(self,dataset_path=None,data_file_path=None,shape_path=None,transform=None,n_channels=3,patch_size=[256,256],overlap=0,padding=False,pad_value=0,file_extension=".tif",X=None,y=None,indices=None,mode="segmentation"):
+    def __init__(self,dataset_path=None,data_file_path=None,shape_path=None,transform=None,n_channels=3,
+                patch_size=[256,256],overlap=0,padding=False,pad_value=0,tree_size_threshold=0,file_extension=".tif",
+                X=None,y=None,indices=None,mode="segmentation"):
         self.transform = transform
         if (dataset_path is None) or (not os.path.isfile(dataset_path)):
             if data_file_path is not None:
@@ -27,6 +29,7 @@ class TrainDataset(Dataset):
                 self.data_file_path = data_file_path
                 self.shape_path = shape_path
                 self.mode = mode
+                self.tree_size_threshold = tree_size_threshold
 
                 if (X is not None) and (y is not None):
                     assert len(X) == len(y)
@@ -35,7 +38,7 @@ class TrainDataset(Dataset):
                 else:
                     shape_df = gdp.read_file(shape_path).geometry
                     raster_files = [os.path.join(data_file_path,i) for i in os.listdir(data_file_path) if i.endswith(file_extension)]
-                    patches_satellite,patches_mask,file_mapping = self._create_patches(raster_files,shape_df)
+                    patches_satellite,patches_mask,file_mapping = self._create_patches(raster_files,shape_df,tree_size_threshold)
                     
                     del shape_df
                     # X = np.empty(tuple((len(patches_satellite),*patch_size[::-1])),dtype="uint8")
@@ -149,14 +152,14 @@ class TrainDataset(Dataset):
             train_transform = self.transform
         
         indices_train,indices_test = train_test_split(self.indices, test_size=test_size, random_state=seed)
-        train_set = RwandaDataset(X=self.X[indices_train],y=self.y[indices_train],data_file_path=self.data_file_path,shape_path=self.shape_path,transform=train_transform,patch_size=self.patch_size,overlap=self.overlap,
+        train_set = TrainDataset(X=self.X[indices_train],y=self.y[indices_train],data_file_path=self.data_file_path,shape_path=self.shape_path,transform=train_transform,patch_size=self.patch_size,overlap=self.overlap,
                                         padding=self.padding,pad_value=self.pad_value,indices=indices_train,n_channels=self.n_channels)
-        test_set = RwandaDataset(X=self.X[indices_test],y=self.y[indices_test],data_file_path=self.data_file_path,shape_path=self.shape_path,transform=test_transform,patch_size=self.patch_size,overlap=self.overlap,
+        test_set = TrainDataset(X=self.X[indices_test],y=self.y[indices_test],data_file_path=self.data_file_path,shape_path=self.shape_path,transform=test_transform,patch_size=self.patch_size,overlap=self.overlap,
                                         padding=self.padding,pad_value=self.pad_value,indices=indices_test,n_channels=self.n_channels)
         
         return train_set,test_set
 
-    def _create_patches(self,raster_files,shape_df):
+    def _create_patches(self,raster_files,shape_df,tree_size_threshold=0.2):
         patches_satellite = []
         patches_mask = []
         start_idx = 0
@@ -167,7 +170,8 @@ class TrainDataset(Dataset):
                 shape_df_filter = shape_df.cx[b_left:b_right,b_bottom:b_top]
 
                 satellite_area_arr = src_sat.read()
-                
+
+
                 if self.padding: 
                     satellite_area_arr,_ = pad_image_even(satellite_area_arr,self.patch_size,self.overlap)
 
@@ -186,7 +190,22 @@ class TrainDataset(Dataset):
                 patches_satellite.extend(reshaped_patches)
 
                 if len(shape_df_filter) > 0:
-                    mask_arr,_,_ = raster_geometry_mask(src_sat,shape_df_filter,invert=True)
+                    if tree_size_threshold > 0:
+                        #Create mask patches
+                        big_trees= shape_df_filter[shape_df_filter.area*1000000000 > tree_size_threshold]
+                        small_trees=shape_df_filter[shape_df_filter.area*1000000000 <= tree_size_threshold]
+
+                        masks = []
+                        if len(big_trees)>0:
+                            tree_mask_big, _, _ = raster_geometry_mask(src_sat, big_trees, invert=True)
+                            masks.append(tree_mask_big)
+                        if len(small_trees) > 0:
+                            tree_mask_small, _, _ = raster_geometry_mask(src_sat, small_trees, invert=True)
+                            masks.append(tree_mask_small*2)
+                        concat = np.stack(masks)
+                        mask_arr = np.max(concat, axis=0)
+                    else:
+                        mask_arr, _, _ = raster_geometry_mask(src_sat, shape_df_filter, invert=True)
                 else:
                     mask_arr = np.zeros(satellite_area_arr.shape[1:],dtype="uint8")
                 pm = self._create_mask_patches(mask_arr)

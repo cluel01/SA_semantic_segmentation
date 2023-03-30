@@ -30,6 +30,6 @@ def create_weighted_dataset(datasets,pixel_weighted=False,weight=None):
     weights[weights == 0] = w
     weights[weights == 1] = 1 - w
     #concat_dataset = torch.utils.data.ConcatDataset(datasets)
-    concat_dataset = ConcatDataset(datasets)
+    concat_dataset = ConcatDataset(datasets,shuffle=False)
     return concat_dataset,weights
     
