@@ -1,6 +1,8 @@
 # Project Overview
 Climate change and anthropogenic pressure are driving ecosystems toward tipping points, where their structure and functioning could be suddenly or irreversibly altered. This project leverages very high-resolution images and deep learning methods to map over 4 billion individual trees and shrubs across all ecosystem types in South Africa. Our findings reveal significant discrepancies in tree and shrub coverage compared to existing maps, suggesting potential shifts in ecosystem structure and functioning.
 
+![Segmentation Results](images/demo.png)  <!-- Add your image path here -->
+
 # Key Findings
 Mapped approximately 4,159,227,100 individual trees and shrubs in South Africa.
 Discovered 151.15% larger tree coverage in shrublands compared to previous maps.
